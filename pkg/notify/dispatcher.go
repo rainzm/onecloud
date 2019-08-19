@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -72,7 +73,7 @@ func (self *NotifyModelDispatcher) DeleteConfig(ctx context.Context, params map[
 	}
 	userCred := policy.FetchUserCredential(ctx)
 	for i := range configs {
-		err = DeleteItem(models.ConfigManager, &configs[i], ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
+		err = DeleteItem(&configs[i], ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
 		if err != nil {
 			return errors.Wrapf(err, "Delete part of old one, so please input new data again.")
 		}
@@ -100,7 +101,7 @@ func (self *NotifyModelDispatcher) UpdateConfig(ctx context.Context, body jsonut
 			return errors.Wrap(err, "Get Config by contactType failed")
 		}
 		for i := range configs {
-			err = DeleteItem(models.ConfigManager, &configs[i], ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
+			err = DeleteItem(&configs[i], ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
 			if err != nil {
 				return errors.Wrapf(err, "Delete part of old one, so please input new data again.")
 			}
@@ -247,7 +248,7 @@ func (self *NotifyModelDispatcher) VerifyTrigger(ctx context.Context, params map
 		for _, verification := range verifications {
 			if current.After(verification.ExpireAt) {
 				//delete old one
-				err = DeleteItem(models.VerifyManager, &verification, ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
+				err = DeleteItem(&verification, ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
 				if err != nil {
 					return nil, httperrors.NewGeneralError(err)
 				}
@@ -275,7 +276,7 @@ func (self *NotifyModelDispatcher) DeleteContacts(ctx context.Context, uids2 []j
 	userCred := policy.FetchUserCredential(ctx)
 	deleteFailed := make([]string, 0, 1)
 	for _, contact := range contacts {
-		err = DeleteItem(models.ContactManager, &contact, ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
+		err = DeleteItem(&contact, ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
 		if err != nil {
 			deleteFailed = append(deleteFailed, contact.ID)
 		}
@@ -328,7 +329,7 @@ func (self *NotifyModelDispatcher) UpdateContacts(ctx context.Context, idstr str
 		pairUpdate := contactInfos[contactType]
 		if len(pairUpdate.contact) == 0 {
 			// delete
-			err = DeleteItem(models.ContactManager, &records[i], ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
+			err = DeleteItem(&records[i], ctx, userCred, jsonutils.JSONNull, jsonutils.JSONNull)
 			if err != nil {
 				deleteFailed = append(deleteFailed, fmt.Sprintf(`uid:%q, contact_type:%q`, idstr, contactType))
 			}
@@ -421,7 +422,9 @@ func mergeQueryParams(params map[string]string, query jsonutils.JSONObject, excl
 }
 
 // DeleteItem delete a database record corresponding to model
-func DeleteItem(manager db.IModelManager, model db.IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+func DeleteItem(model db.IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+	lockman.LockObject(ctx, model)
+	defer lockman.ReleaseObject(ctx, model)
 	err := model.ValidateDeleteCondition(ctx)
 	if err != nil {
 		log.Errorf("validate delete condition error: %s", err)
@@ -444,8 +447,9 @@ func DeleteItem(manager db.IModelManager, model db.IModel, ctx context.Context, 
 
 // UpdateItem update a database record corresponding to model whose update fields are in data
 func UpdateItem(manager db.IModelManager, item db.IModel, ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
+	lockman.LockObject(ctx, item)
+	defer lockman.ReleaseObject(ctx, item)
 	var err error
-
 	err = item.ValidateUpdateCondition(ctx)
 
 	if err != nil {
