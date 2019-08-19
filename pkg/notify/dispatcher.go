@@ -106,6 +106,7 @@ func (self *NotifyModelDispatcher) UpdateConfig(ctx context.Context, body jsonut
 			}
 		}
 	}
+	config := make(map[string]string)
 	// create
 	for _, key := range data.SortedKeys() {
 		createData := jsonutils.NewDict()
@@ -114,10 +115,13 @@ func (self *NotifyModelDispatcher) UpdateConfig(ctx context.Context, body jsonut
 		createData.Add(jsonutils.NewString(key), "key_text")
 		createData.Add(jsonutils.NewString(contactType), "type")
 		_, err := self.Create(ctx, jsonutils.JSONNull, createData, nil)
+		config[key] = tmp.String()
 		if err != nil {
 			return errors.Wrapf(err, "Create config (%s, %s, %s) failed", contactType, key, tmp)
 		}
 	}
+	// update config
+	go models.RpcService.RestartService(config, contactType)
 	return nil
 }
 
