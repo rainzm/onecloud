@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
@@ -275,12 +274,23 @@ func verifyTriggerHandler(ctx context.Context, w http.ResponseWriter, r *http.Re
 //speciallist hander for contact records
 func listManyHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	manager, params, query, _ := fetchEnv(ctx, w, r)
-	listResult, err := manager.List(ctx, mergeQueryParams(params, query), nil)
+	// support limit offset
+	var limit, offset int64
+	queryDict := query.(*jsonutils.JSONDict)
+	if query.Contains("limit") {
+		limit, _ = query.Int("limit")
+		queryDict.Remove("limit")
+		queryDict.Add(jsonutils.NewInt(1000), "limit")
+	}
+	if query.Contains("offset") {
+		offset, _ = query.Int("offset")
+	}
+	listResult, err := manager.List(ctx, mergeQueryParams(params, query,  "offset"), nil)
 	if err != nil {
 		httperrors.GeneralServerError(w, err)
 		return
 	}
-	listResult = arrangeList(listResult)
+	listResult = arrangeList(listResult, int(offset), int(limit))
 	appsrv.SendJSON(w, modules.ListResult2JSONWithKey(listResult, manager.KeywordPlural()))
 }
 
@@ -314,25 +324,37 @@ func wrap(data jsonutils.JSONObject, key string) jsonutils.JSONObject {
 // For limit option, there is a bug but don't fix it for now.
 // This limit point to contact record, but these contact records whose uid are same
 // are considered as one record.
-func arrangeList(listResult *modules.ListResult) *modules.ListResult {
+func arrangeList(listResult *modules.ListResult, offset, limit int) *modules.ListResult {
 	ret := make(map[string]*jsonutils.JSONArray)
+	sortedKeys := make([]string, 0, 2)
 	for _, data := range listResult.Data {
 		uid, _ := data.GetString("uid")
 		_, ok := ret[uid]
 		if !ok {
 			ret[uid] = jsonutils.NewArray()
+			sortedKeys = append(sortedKeys, uid)
 		}
 		ret[uid].Add(data)
 	}
 	data := make([]jsonutils.JSONObject, len(ret))
 	index := 0
-	for uid, value := range ret {
+	for _, uid := range sortedKeys {
+		value := ret[uid]
 		cr := models.NewSContactResponse(uid, value.String())
 		data[index] = jsonutils.Marshal(cr)
 		index++
 	}
-	listResult.Data = data
-	listResult.Total = len(ret)
+	if offset > len(data) {
+		listResult.Data = []jsonutils.JSONObject{}
+	} else if limit == 0 || limit+offset > len(data){
+		listResult.Data = data[offset:]
+	} else {
+		listResult.Data = data[offset:offset+limit]
+	}
+	listResult.Total = len(sortedKeys)
+	listResult.Limit = limit
+	listResult.Offset = offset
+	log.Debugf("before deal: total:%d, limit:%d, offset:%d", listResult.Total, listResult.Limit, listResult.Offset)
 	return listResult
 }
 
