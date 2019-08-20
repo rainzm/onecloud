@@ -54,14 +54,53 @@ func init() {
 type SNotification struct {
 	SStatusStandaloneResourceBase
 
-	UID         string    `width:"128" nullable:"false" create:"required"`
-	ContactType string    `width:"16" nullable:"false" create:"required"`
-	Topic       string    `width:"128" nullable:"false" create:"optional"`
-	Priority    string    `width:"16" nullable:"false" create:"optional"`
+	UID         string    `width:"128" nullable:"false" create:"required" list:"user"`
+	ContactType string    `width:"16" nullable:"false" create:"required" list:"user"`
+	Topic       string    `width:"128" nullable:"false" create:"optional" list:"user"`
+	Priority    string    `width:"16" nullable:"false" create:"optional" list:"user"`
 	Msg         string    `create:"required"`
-	ReceivedAt  time.Time `nullable:"false"`
+	ReceivedAt  time.Time `nullable:"false" list:"user"`
 	SendAt      time.Time `nullable:"false"`
 	SendBy      string    `width:"128" nullable:"false"`
+}
+
+type UserDetail struct {
+	Status     string
+	Name       string
+	ReceivedAt time.Time
+}
+
+func (self *SNotification) GetCustomizeColumns(ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject) *jsonutils.JSONDict {
+	userDetail := UserDetail{
+		Status:     self.Status,
+		Name: self.UID,
+		ReceivedAt: self.ReceivedAt,
+	}
+	name, err := utils.GetUsernameByID(self.UID)
+	if err == nil && len(name) != 0 {
+		userDetail.Name = name
+	}
+	ret := jsonutils.NewDict()
+	data := jsonutils.Marshal([]UserDetail{userDetail})
+	ret.Add(data, "user_list")
+	return ret
+}
+
+func (self *SNotification) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*jsonutils.JSONDict, error) {
+	userDetail := UserDetail{
+		Status:     self.Status,
+		Name: self.UID,
+		ReceivedAt: self.ReceivedAt,
+	}
+	name, err := utils.GetUsernameByID(self.UID)
+	if err == nil && len(name) != 0 {
+		userDetail.Name = name
+	}
+	ret := jsonutils.NewDict()
+	data := jsonutils.Marshal([]UserDetail{userDetail})
+	ret.Add(data, "user_list")
+	return ret, nil
 }
 
 func (self *SNotificationManager) AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
@@ -73,7 +112,10 @@ func (self *SNotificationManager) AllowCreateItem(ctx context.Context, userCred 
 }
 
 func (self *SNotificationManager) InitializeData() error {
-	sql := fmt.Sprintf("update %s set updated_at=update_at, deleted=is_deleted", self.TableSpec().Name())
+	scope := time.Duration(30) * time.Minute
+	time := time.Now().Add(scope)
+	sql := fmt.Sprintf("update %s set updated_at=update_at, deleted=is_deleted where created_at > %s",
+		self.TableSpec().Name(), time.String())
 	q := sqlchemy.NewRawQuery(sql, "")
 	q.Row()
 	return nil
@@ -92,13 +134,13 @@ func (self *SNotificationManager) BatchCreate(ctx context.Context, data jsonutil
 
 	for i := range contacts {
 		createData := map[string]string{
-			"uid":          contacts[i].ID,
+			"uid":          contacts[i].UID,
 			"contact_type": contacts[i].ContactType,
 			"topic":        topic,
 			"priority":     priority,
 			"msg":          msg,
 			"send_by":      userCred.GetUserId(),
-			"status":       NOTIFY_UNSENT,
+			"status":       NOTIFY_RECEIVED,
 		}
 		model, err := db.DoCreate(self, ctx, userCred, jsonutils.JSONNull, jsonutils.Marshal(createData), ownerID)
 		if err != nil {
@@ -130,7 +172,7 @@ func (self *SNotificationManager) BatchCreate(ctx context.Context, data jsonutil
 
 func (self *SNotificationManager) FetchNotOK(lastTime time.Time) ([]SNotification, error) {
 	q := self.Query()
-	q.Filter(sqlchemy.AND(sqlchemy.GE(q.Field("created_at"), lastTime), sqlchemy.NotEquals(q.Field("status"), NOTIFY_UNSENT)))
+	q.Filter(sqlchemy.AND(sqlchemy.GE(q.Field("created_at"), lastTime), sqlchemy.NotEquals(q.Field("status"), NOTIFY_OK)))
 	records := make([]SNotification, 0, 10)
 	err := db.FetchModelObjects(self, q, &records)
 	if err != nil {
@@ -161,6 +203,35 @@ func send(notifications []*SNotification, userCred mcclient.TokenCredential, con
 		go sendone(notifications[i], contacts[i])
 	}
 	wg.Wait()
+}
+
+func (self *SNotification) SetStatus(userCred mcclient.TokenCredential, status string, reason string) error {
+	if self.Status == status {
+		return nil
+	}
+	recived := false
+	if status == NOTIFY_RECEIVED {
+		recived = true
+	}
+	oldStatus := self.Status
+	_, err := db.Update(self, func() error {
+		self.Status = status
+		if recived {
+			self.ReceivedAt = time.Now()
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if userCred != nil {
+		notes := fmt.Sprintf("%s=>%s", oldStatus, status)
+		if len(reason) > 0 {
+			notes = fmt.Sprintf("%s: %s", notes, reason)
+		}
+		db.OpsLog.LogEvent(self, db.ACT_UPDATE_STATUS, notes, userCred)
+	}
+	return nil
 }
 
 func (self *SNotification) SetSentAndTime(userCred mcclient.TokenCredential) error {

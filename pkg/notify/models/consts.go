@@ -21,8 +21,6 @@ const (
 	WEBCONSOLE = "webconsole"
 	// Received a task about sending a notification
 	NOTIFY_RECEIVED = "received"
-	// Nofity module hasn't sent the notification
-	NOTIFY_UNSENT = "unsent"
 	// Nofity module has sent notification, but result unkown
 	NOTIFY_SENT = "sent"
 	// Notification was sent successfully
