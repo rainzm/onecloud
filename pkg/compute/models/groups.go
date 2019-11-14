@@ -145,7 +145,7 @@ func (group *SGroup) PerformBindGuests(ctx context.Context, userCred mcclient.To
 	if group.Enabled.IsFalse() {
 		return nil, httperrors.NewForbiddenError("can not bind guest from disabled guest")
 	}
-	guestIdSet, hostIds, err := group.checkGuests(ctx, userCred, query, data)
+	guestSet, err := group.analysisGuests(ctx, userCred, query, data)
 	if err != nil {
 		return nil, err
 	}
@@ -155,12 +155,33 @@ func (group *SGroup) PerformBindGuests(ctx context.Context, userCred mcclient.To
 		return nil, err
 	}
 
+	// delete extra guests in the request
 	for i := range groupGuests {
 		guestId := groupGuests[i].GuestId
-		if guestIdSet.Has(guestId) {
-			guestIdSet.Delete(guestId)
+		if _, ok := guestSet[guestId]; ok {
+			delete(guestSet, guestId)
 		}
 	}
+
+	type sHostLimit struct {
+		host *SHost
+		guestNum int
+	}
+
+	// get Hosts and
+	hostIdList := make([]string, 0, 5)
+	hostGuestNum := make(map[string]sHostLimit, 5)
+	for _, guest := range guestSet {
+		if _, ok := hostGuestNum[guest.HostId]; !ok {
+			hostIdList = append(hostIdList, guest.HostId)
+			host, err :=
+		}
+		hostGuestNum[guest.HostId] += 1
+	}
+
+	// up to group.Granularity guest per host
+
+
 
 	for _, guestId := range guestIdSet.UnsortedList() {
 		_, err := GroupguestManager.Attach(ctx, group.Id, guestId)
@@ -190,7 +211,7 @@ func (group *SGroup) PerformUnbindGuests(ctx context.Context, userCred mcclient.
 	if group.Enabled.IsFalse() {
 		return nil, httperrors.NewForbiddenError("can not unbind guest from disabled guest")
 	}
-	guestIdSet, hostIds, err := group.checkGuests(ctx, userCred, query, data)
+	guestIdSet, hostIds, err := group.analysisGuests(ctx, userCred, query, data)
 	if err != nil {
 		return nil, err
 	}
@@ -221,34 +242,31 @@ func (group *SGroup) PerformUnbindGuests(ctx context.Context, userCred mcclient.
 	return nil, nil
 }
 
-func (group *SGroup) checkGuests(ctx context.Context, userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject, data jsonutils.JSONObject) (guestIdSet sets.String, hostIds []string, err error) {
+func (group *SGroup) analysisGuests(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject,
+	data jsonutils.JSONObject) (map[string]*SGuest, error) {
 
 	guestIdArr := jsonutils.GetArrayOfPrefix(data, "guest")
 	if len(guestIdArr) == 0 {
-		return nil, nil, httperrors.NewMissingParameterError("guest.0 guest.1 ... ")
+		return nil, httperrors.NewMissingParameterError("guest.0 guest.1 ... ")
 	}
-
-	guestIdSet = sets.NewString()
-	hostIdSet := sets.NewString()
+	var err error
+	guestSet := make(map[string]*SGuest, len(guestIdArr))
 	for i := range guestIdArr {
 		guestIdStr, _ := guestIdArr[i].GetString()
 		model, err := GuestManager.FetchByIdOrName(userCred, guestIdStr)
 		if err == sql.ErrNoRows {
-			return nil, nil, httperrors.NewInputParameterError("no such model %s", guestIdStr)
+			return nil, httperrors.NewInputParameterError("no such model %s", guestIdStr)
 		}
 		if err != nil {
-			return nil, nil, errors.Wrapf(err, "fail to fetch model by id or name %s", guestIdStr)
+			return nil, errors.Wrapf(err, "fail to fetch model by id or name %s", guestIdStr)
 		}
 		guest := model.(*SGuest)
 		if guest.ProjectId != group.ProjectId {
-			return nil, nil, httperrors.NewForbiddenError("guest and instance group should belong to same project")
+			return nil, httperrors.NewForbiddenError("guest and instance group should belong to same project")
 		}
-		guestIdSet.Insert(guest.GetId())
-		hostIdSet.Insert(guest.HostId)
+		guestSet[guest.GetId()] = guest
 	}
-	hostIds = hostIdSet.List()
-	return
+	return guestSet, err
 }
 
 func (group *SGroup) AllowPerformEnable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
