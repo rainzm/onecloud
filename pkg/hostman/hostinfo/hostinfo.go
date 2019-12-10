@@ -44,6 +44,7 @@ import (
 	"yunion.io/x/onecloud/pkg/hostman/storageman"
 	"yunion.io/x/onecloud/pkg/hostman/system_service"
 	"yunion.io/x/onecloud/pkg/mcclient"
+	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
 	"yunion.io/x/onecloud/pkg/util/cgrouputils"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
@@ -171,16 +172,26 @@ func (h *SHostInfo) generateLocalNetworkConfig() (string, error) {
 	if !fileutils2.Exists(path.Join("/sys/class/net", dev, "device")) {
 		return "", errors.Errorf("found dev %s not a physical device", dev)
 	}
-	bridgeName := "br"
-	index := 0
-	for {
-		if _, err := net.InterfaceByName(bridgeName + strconv.Itoa(index)); err != nil {
-			bridgeName = bridgeName + strconv.Itoa(index)
-			break
-		}
-		index += 1
+
+	var bridgeName string
+	if output, err := procutils.NewCommand("ovs-vsctl", "port-to-br", dev).Output(); err != nil {
+		return "", errors.Wrap(err, "port to br")
+	} else {
+		bridgeName = strings.TrimSpace(string(output))
 	}
-	log.Infof("new bridge name %s", bridgeName)
+	if len(bridgeName) == 0 {
+		bridgeName = "br"
+		index := 0
+		for {
+			if _, err := net.InterfaceByName(bridgeName + strconv.Itoa(index)); err != nil {
+				bridgeName = bridgeName + strconv.Itoa(index)
+				break
+			}
+			index += 1
+		}
+	}
+
+	log.Infof("bridge name %s", bridgeName)
 	return fmt.Sprintf("%s/%s/%s", dev, bridgeName, ip), nil
 }
 
@@ -195,6 +206,7 @@ func (h *SHostInfo) parseConfig() error {
 		if err != nil {
 			return err
 		}
+		log.Infof("Generate network config %s", netConf)
 		options.HostOptions.Networks = []string{netConf}
 		if len(options.HostOptions.Config) > 0 {
 			if err = fileutils2.FilePutContents(
@@ -676,14 +688,14 @@ func (h *SHostInfo) tryCreateNetworkOnWire() {
 		hostutils.GetComputeSession(context.Background()),
 		"try-create-network", params)
 	if err != nil {
-		h.onFail(fmt.Sprintf("try create network get error %s", err))
+		h.onFail(fmt.Sprintf("try create network: %v", err))
 	}
 	if !jsonutils.QueryBoolean(ret, "find_matched", false) {
-		h.onFail(fmt.Sprintf("try create network get error %s", err))
+		h.onFail("try create network: find_matched == false")
 	}
 	wireId, err := ret.GetString("wire_id")
 	if err != nil {
-		h.onFail(fmt.Sprintf("try create network get error %s", err))
+		h.onFail(fmt.Sprintf("try create network: get wire_id: %v", err))
 	}
 	h.onGetWireId(wireId)
 }
@@ -1353,6 +1365,9 @@ func (h *SHostInfo) unregister() {
 func (h *SHostInfo) OnCatalogChanged(catalog mcclient.KeystoneServiceCatalogV3) {
 	// TODO: dynamic probe endpoint type
 	defaultEndpointType := options.HostOptions.SessionEndpointType
+	if len(defaultEndpointType) == 0 {
+		defaultEndpointType = auth.PublicEndpointType
+	}
 	if options.HostOptions.ManageNtpConfiguration {
 		ntpd := system_service.GetService("ntpd")
 		urls, _ := catalog.GetServiceURLs("ntp", options.HostOptions.Region, "", defaultEndpointType)

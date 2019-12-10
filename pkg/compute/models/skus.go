@@ -25,15 +25,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
@@ -381,7 +381,17 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		data.Set("name", jsonutils.NewString(name))
 	}
 
-	return self.SStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input := apis.StatusStandaloneResourceCreateInput{}
+	err := data.Unmarshal(&input)
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("unmarshal StatusStandaloneResourceCreateInput fail %s", err)
+	}
+	input, err = self.SStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+	data.Update(jsonutils.Marshal(input))
+	return data, nil
 }
 
 func (self *SServerSku) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
@@ -1057,19 +1067,12 @@ func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred 
 	sku.constructSku(extSku)
 
 	sku.Name = extSku.GetName()
+	sku.CloudregionId = api.DEFAULT_REGION_ID
 	sku.SetModelManager(manager, sku)
 	err := manager.TableSpec().Insert(sku)
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudSku.Insert")
 	}
-	_, err = sku.GetModelManager().TableSpec().Update(sku, func() error {
-		sku.CloudregionId = ""
-		return nil
-	})
-	if err != nil {
-		return errors.Wrapf(err, "Update sku %s cloudregion info", sku.Name)
-	}
-
 	db.OpsLog.LogEvent(sku, db.ACT_CREATE, sku.GetShortDesc(ctx), userCred)
 
 	return nil

@@ -68,10 +68,10 @@ type SInstanceTag struct {
 type SInstance struct {
 	multicloud.SInstanceBase
 	host *SHost
+	SResourceBase
 
 	Id                 string
 	CreationTimestamp  time.Time
-	Name               string
 	Description        string
 	Tags               SInstanceTag
 	MachineType        string
@@ -82,7 +82,6 @@ type SInstance struct {
 	Disks              []InstanceDisk
 	Metadata           map[string]string
 	ServiceAccounts    []ServiceAccount
-	SelfLink           string
 	Scheduling         map[string]interface{}
 	CpuPlatform        string
 	LabelFingerprint   string
@@ -108,18 +107,6 @@ func (region *SRegion) GetInstances(zone string, maxResults int, pageToken strin
 func (region *SRegion) GetInstance(id string) (*SInstance, error) {
 	instance := &SInstance{}
 	return instance, region.Get(id, instance)
-}
-
-func (instance *SInstance) GetId() string {
-	return instance.SelfLink
-}
-
-func (instnace *SInstance) GetGlobalId() string {
-	return getGlobalId(instnace.SelfLink)
-}
-
-func (instance *SInstance) GetName() string {
-	return instance.Name
 }
 
 func (instnace *SInstance) IsEmulated() bool {
@@ -235,11 +222,12 @@ func (instance *SInstance) GetIEIP() (cloudprovider.ICloudEIP, error) {
 					return &eips[0], nil
 				}
 				eip := &SAddress{
-					region:   instance.host.zone.region,
-					SelfLink: instance.SelfLink,
-					Id:       instance.SelfLink,
-					Address:  conf.NatIP,
+					region:  instance.host.zone.region,
+					Id:      instance.SelfLink,
+					Status:  "IN_USE",
+					Address: conf.NatIP,
 				}
+				eip.SelfLink = instance.SelfLink
 				return eip, nil
 			}
 		}
@@ -330,7 +318,7 @@ func (instance *SInstance) GetSecurityGroupIds() ([]string, error) {
 			if len(instance.ServiceAccounts) > 0 && isecgroup.GetName() == instance.ServiceAccounts[0].Email {
 				secgroupIds = append(secgroupIds, isecgroup.GetGlobalId())
 			}
-			if isecgroup.GetName() == globalnetwork.GetName() {
+			if isecgroup.GetName() == globalnetwork.Name {
 				secgroupIds = append(secgroupIds, isecgroup.GetGlobalId())
 			}
 		}

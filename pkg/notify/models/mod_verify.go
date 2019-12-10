@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/log"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -64,7 +65,7 @@ func NewSVerify(contactType string, cid string) *SVerify {
 		expireAt = now.Add(12 * time.Hour)
 	} else {
 		token = utils.GenerateMobileToken()
-		expireAt = now.Add(5 * time.Minute)
+		expireAt = now.Add(2 * time.Minute)
 	}
 	ret := &SVerify{
 		CID:      cid,
@@ -78,8 +79,20 @@ func NewSVerify(contactType string, cid string) *SVerify {
 }
 
 func (self *SVerifyManager) InitializeData() error {
+	q := self.Query()
+	q = q.Filter(sqlchemy.OR(sqlchemy.IsNotNull(q.Field("updated_at")), sqlchemy.IsTrue(q.Field("deleted"))))
+	n, err := q.CountWithError()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		log.Debugf("no need to init data for %s", self.TableSpec().Name())
+		// no need to init data
+		return nil
+	}
+	log.Debugf("need to init data for %s", self.TableSpec().Name())
 	sql := fmt.Sprintf("update %s set updated_at=update_at, deleted=is_deleted", self.TableSpec().Name())
-	q := sqlchemy.NewRawQuery(sql, "")
+	q = sqlchemy.NewRawQuery(sql, "")
 	q.Row()
 	return nil
 }

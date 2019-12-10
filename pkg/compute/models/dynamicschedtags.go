@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -158,7 +159,17 @@ func (manager *SDynamicschedtagManager) ValidateCreateData(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	return manager.SStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input := apis.StandaloneResourceCreateInput{}
+	err = data.Unmarshal(&input)
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("unmarshal StandaloneResourceCreateInput fail %s", err)
+	}
+	input, err = manager.SStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+	data.Update(jsonutils.Marshal(input))
+	return data, nil
 }
 
 func (self *SDynamicschedtag) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
@@ -260,7 +271,7 @@ func (self *SDynamicschedtag) PerformEvaluate(ctx context.Context, userCred mccl
 
 	log.V(10).Debugf("Dynamicschedtag evaluate input: %s", params.PrettyString())
 
-	meet, err := conditionparser.Eval(self.Condition, params)
+	meet, err := conditionparser.EvalBool(self.Condition, params)
 	if err != nil {
 		return nil, err
 	}

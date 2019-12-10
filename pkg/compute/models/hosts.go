@@ -36,6 +36,7 @@ import (
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/appsrv"
@@ -328,6 +329,22 @@ func (manager *SHostManager) ListItemFilter(ctx context.Context, q *sqlchemy.SQu
 			sqlchemy.In(q.Field("id"), hostQ1.SubQuery()),
 			sqlchemy.In(q.Field("id"), hostQ2.SubQuery()),
 		))
+
+		zones := ZoneManager.Query().SubQuery()
+		q = q.Join(zones, sqlchemy.Equals(q.Field("zone_id"), zones.Field("id"))).
+			Filter(sqlchemy.Equals(zones.Field("status"), api.ZONE_ENABLE))
+
+		q = q.In("status", []string{api.HOST_STATUS_RUNNING, api.HOST_STATUS_READY})
+
+		q = q.Filter(
+			sqlchemy.OR(
+				sqlchemy.AND(
+					sqlchemy.NotEquals(q.Field("host_type"), api.HOST_TYPE_BAREMETAL),
+					sqlchemy.Equals(q.Field("host_status"), api.HOST_ONLINE),
+				),
+				sqlchemy.Equals(q.Field("host_type"), api.HOST_TYPE_BAREMETAL),
+			),
+		)
 	}
 
 	if query.Contains("is_empty") {
@@ -824,7 +841,7 @@ func (self *SHostManager) AllowGetPropertyBmStartRegisterScript(ctx context.Cont
 }
 
 func (self *SHostManager) GetPropertyBmStartRegisterScript(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	regionUri, err := auth.GetServiceURL("compute_v2", options.Options.Region, "", "")
+	regionUri, err := auth.GetPublicServiceURL("compute_v2", options.Options.Region, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1257,9 +1274,9 @@ func (self *SHost) GetBaremetalnetworks() []SHostnetwork {
 	return hns
 }
 
-func (self *SHost) GetAttach2Network(network *SNetwork) *SHostnetwork {
+func (self *SHost) GetAttach2Network(netId string) *SHostnetwork {
 	q := self.GetBaremetalnetworksQuery()
-	q = q.Equals("network_id", network.Id)
+	q = q.Equals("network_id", netId)
 	hn := SHostnetwork{}
 	hn.SetModelManager(HostnetworkManager, &hn)
 
@@ -1272,7 +1289,7 @@ func (self *SHost) GetAttach2Network(network *SNetwork) *SHostnetwork {
 }
 
 func (self *SHost) isAttach2Network(network *SNetwork) bool {
-	hn := self.GetAttach2Network(network)
+	hn := self.GetAttach2Network(network.Id)
 	return hn != nil
 }
 
@@ -2027,7 +2044,7 @@ func (manager *SHostManager) FetchHostById(hostId string) *SHost {
 
 func (manager *SHostManager) totalCountQ(
 	userCred mcclient.IIdentityProvider,
-	rangeObj db.IStandaloneModel,
+	rangeObjs []db.IStandaloneModel,
 	hostStatus, status string,
 	hostTypes []string,
 	resourceTypes []string,
@@ -2035,15 +2052,6 @@ func (manager *SHostManager) totalCountQ(
 	enabled, isBaremetal tristate.TriState,
 ) *sqlchemy.SQuery {
 	hosts := manager.Query().SubQuery()
-	/*
-			    MemSize     int
-		    MemReserved int
-		    MemCmtbound float32
-		    CpuCount    int8
-		    CpuReserved int8
-		    CpuCmtbound float32
-		    StorageSize int
-	*/
 	q := hosts.Query(
 		hosts.Field("mem_size"),
 		hosts.Field("mem_reserved"),
@@ -2073,7 +2081,7 @@ func (manager *SHostManager) totalCountQ(
 		}
 		q = q.Filter(cond(hosts.Field("is_baremetal")))
 	}
-	q = AttachUsageQuery(q, hosts, hostTypes, resourceTypes, providers, brands, cloudEnv, rangeObj)
+	q = AttachUsageQuery(q, hosts, hostTypes, resourceTypes, providers, brands, cloudEnv, rangeObjs)
 	return q
 }
 
@@ -2152,14 +2160,28 @@ func (manager *SHostManager) calculateCount(q *sqlchemy.SQuery) HostsCountStat {
 
 func (manager *SHostManager) TotalCount(
 	userCred mcclient.IIdentityProvider,
-	rangeObj db.IStandaloneModel,
+	rangeObjs []db.IStandaloneModel,
 	hostStatus, status string,
 	hostTypes []string,
 	resourceTypes []string,
 	providers []string, brands []string, cloudEnv string,
 	enabled, isBaremetal tristate.TriState,
 ) HostsCountStat {
-	return manager.calculateCount(manager.totalCountQ(userCred, rangeObj, hostStatus, status, hostTypes, resourceTypes, providers, brands, cloudEnv, enabled, isBaremetal))
+	return manager.calculateCount(
+		manager.totalCountQ(
+			userCred,
+			rangeObjs,
+			hostStatus,
+			status,
+			hostTypes,
+			resourceTypes,
+			providers,
+			brands,
+			cloudEnv,
+			enabled,
+			isBaremetal,
+		),
+	)
 }
 
 /*
@@ -2779,7 +2801,17 @@ func (manager *SHostManager) ValidateCreateData(ctx context.Context, userCred mc
 		}
 	}
 
-	return manager.SEnabledStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input := apis.EnabledStatusStandaloneResourceCreateInput{}
+	err = data.Unmarshal(&input)
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("unmarshal EnabledStatusStandaloneCreateInput fail %s", err)
+	}
+	input, err = manager.SEnabledStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+	data.Update(jsonutils.Marshal(input))
+	return data, nil
 }
 
 func (self *SHost) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {

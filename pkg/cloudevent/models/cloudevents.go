@@ -16,15 +16,19 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/sqlchemy"
 
+	api "yunion.io/x/onecloud/pkg/apis/cloudevent"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudevent/options"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
+	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
@@ -73,6 +77,69 @@ func (self *SCloudevent) AllowDeleteItem(ctx context.Context, userCred mcclient.
 
 func (self *SCloudevent) AllowUpdateItem(ctx context.Context, userCred mcclient.TokenCredential) bool {
 	return false
+}
+
+func (manager *SCloudeventManager) ListItemFilter(ctx context.Context, q *sqlchemy.SQuery, userCred mcclient.TokenCredential, input *api.CloudeventListInput) (*sqlchemy.SQuery, error) {
+	q, err := manager.SVirtualResourceBaseManager.ListItemFilter(ctx, q, userCred, input.JSON(input))
+	if err != nil {
+		return nil, err
+	}
+	if len(input.Cloudprovider) > 0 {
+		providerObj, err := CloudproviderManager.FetchByIdOrName(userCred, input.Cloudprovider)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, httperrors.NewResourceNotFoundError2(CloudproviderManager.Keyword(), input.Cloudprovider)
+			} else {
+				return nil, httperrors.NewGeneralError(err)
+			}
+		}
+		q = q.Equals("cloudprovider_id", providerObj.GetId())
+	}
+
+	if len(input.Providers) > 0 {
+		sq := CloudproviderManager.Query().SubQuery()
+		q = q.Join(sq, sqlchemy.Equals(q.Field("cloudprovider_id"), sq.Field("id"))).
+			Filter(sqlchemy.In(sq.Field("provider"), input.Providers))
+	}
+	//过滤已删除的cloudprovider日志
+	sq := CloudproviderManager.Query("id").SubQuery()
+	q = q.In("cloudprovider_id", sq)
+	return q, nil
+}
+
+func (self *SCloudevent) GetCloudprovider() (*SCloudprovider, error) {
+	cloudprovider, err := CloudproviderManager.FetchById(self.CloudproviderId)
+	if err != nil {
+		return nil, err
+	}
+	return cloudprovider.(*SCloudprovider), nil
+}
+
+func (self *SCloudevent) GetCustomizeColumns(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) *jsonutils.JSONDict {
+	extra := self.SStatusStandaloneResourceBase.GetCustomizeColumns(ctx, userCred, query)
+	extra, _ = self.getMoreDetails(ctx, userCred, query, extra)
+	return extra
+}
+
+func (self *SCloudevent) getMoreDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, extra *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+	cloudprovider, err := self.GetCloudprovider()
+	if err != nil {
+		return nil, err
+	}
+	info := jsonutils.Marshal(map[string]string{
+		"provider": cloudprovider.Provider,
+		"manager":  cloudprovider.Name,
+	})
+	extra.Update(info)
+	return extra, nil
+}
+
+func (self *SCloudevent) GetExtraDetails(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*jsonutils.JSONDict, error) {
+	extra, err := self.SVirtualResourceBase.GetExtraDetails(ctx, userCred, query)
+	if err != nil {
+		return nil, err
+	}
+	return self.getMoreDetails(ctx, userCred, query, extra)
 }
 
 func (self *SCloudeventManager) fetchMods(ctx context.Context, userCred mcclient.TokenCredential) {

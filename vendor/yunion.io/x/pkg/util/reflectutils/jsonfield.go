@@ -17,6 +17,7 @@ package reflectutils
 import (
 	"reflect"
 	"strings"
+	"sync"
 
 	"yunion.io/x/pkg/gotypes"
 	"yunion.io/x/pkg/utils"
@@ -31,6 +32,24 @@ type SStructFieldInfo struct {
 	FieldName   string
 	ForceString bool
 	Tags        map[string]string
+}
+
+func (s SStructFieldInfo) deepCopy() *SStructFieldInfo {
+	scopy := SStructFieldInfo{
+		Ignore:      s.Ignore,
+		OmitEmpty:   s.OmitEmpty,
+		OmitFalse:   s.OmitFalse,
+		OmitZero:    s.OmitZero,
+		Name:        s.Name,
+		FieldName:   s.FieldName,
+		ForceString: s.ForceString,
+	}
+	tags := make(map[string]string, len(s.Tags))
+	for k, v := range s.Tags {
+		tags[k] = v
+	}
+	scopy.Tags = tags
+	return &scopy
 }
 
 func ParseStructFieldJsonInfo(sf reflect.StructField) SStructFieldInfo {
@@ -78,18 +97,18 @@ func ParseStructFieldJsonInfo(sf reflect.StructField) SStructFieldInfo {
 	if val, ok := info.Tags["name"]; ok {
 		info.Name = val
 	}
+	if len(info.Name) == 0 {
+		info.Name = utils.CamelSplit(info.FieldName, "_")
+	}
 	return info
 }
 
 func (info *SStructFieldInfo) MarshalName() string {
-	if len(info.Name) > 0 {
-		return info.Name
-	}
-	return utils.CamelSplit(info.FieldName, "_")
+	return info.Name
 }
 
 type SStructFieldValue struct {
-	Info  SStructFieldInfo
+	Info  *SStructFieldInfo
 	Value reflect.Value
 }
 
@@ -103,9 +122,51 @@ func FetchStructFieldValueSetForWrite(dataValue reflect.Value) SStructFieldValue
 	return fetchStructFieldValueSet(dataValue, true)
 }
 
+type sStructFieldInfoMap map[string]SStructFieldInfo
+
+func newStructFieldInfoMap(caps int) sStructFieldInfoMap {
+	return make(map[string]SStructFieldInfo, caps)
+}
+
+var structFieldInfoCache sync.Map
+
+func fetchCacheStructFieldInfos(dataType reflect.Type) sStructFieldInfoMap {
+	if r, ok := structFieldInfoCache.Load(dataType); ok {
+		return r.(sStructFieldInfoMap)
+	}
+	infos := fetchStructFieldInfos(dataType)
+	structFieldInfoCache.Store(dataType, infos)
+	return infos
+}
+
+func fetchStructFieldInfos(dataType reflect.Type) sStructFieldInfoMap {
+	smap := newStructFieldInfoMap(dataType.NumField())
+	for i := 0; i < dataType.NumField(); i += 1 {
+		sf := dataType.Field(i)
+		if !gotypes.IsFieldExportable(sf.Name) {
+			continue
+		}
+		if sf.Anonymous {
+			// call ParseStructFieldJsonInfo for sf if sft.Kind() is reflect.Interface:
+			// if the corresponding value is reflect.Struct, this item in fieldInfos will be ignored,
+			// otherwise this item in fieldInfos will be used correctly
+			sft := sf.Type
+			if sft.Kind() == reflect.Ptr {
+				sft = sft.Elem()
+			}
+			if sft.Kind() == reflect.Struct && sft != gotypes.TimeType {
+				continue
+			}
+		}
+		smap[sf.Name] = ParseStructFieldJsonInfo(sf)
+	}
+	return smap
+}
+
 func fetchStructFieldValueSet(dataValue reflect.Value, allocatePtr bool) SStructFieldValueSet {
 	fields := SStructFieldValueSet{}
 	dataType := dataValue.Type()
+	fieldInfos := fetchCacheStructFieldInfos(dataType)
 	for i := 0; i < dataType.NumField(); i += 1 {
 		sf := dataType.Field(i)
 
@@ -143,11 +204,13 @@ func fetchStructFieldValueSet(dataValue reflect.Value, allocatePtr bool) SStruct
 				continue
 			}
 		}
-		jsonInfo := ParseStructFieldJsonInfo(sf)
-		fields = append(fields, SStructFieldValue{
-			Info:  jsonInfo,
-			Value: fv,
-		})
+		fieldInfo := fieldInfos[sf.Name].deepCopy()
+		if !fieldInfo.Ignore {
+			fields = append(fields, SStructFieldValue{
+				Info:  fieldInfo,
+				Value: fv,
+			})
+		}
 	}
 	return fields
 }

@@ -21,10 +21,12 @@ import (
 
 	"yunion.io/x/jsonutils"
 
+	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
 	"yunion.io/x/onecloud/pkg/mcclient/options"
+	objectshell "yunion.io/x/onecloud/pkg/multicloud/objectstore"
 )
 
 func init() {
@@ -105,9 +107,11 @@ func init() {
 	})
 
 	type BucketListObjectsOptions struct {
-		ID        string `help:"ID or name of bucket" json:"-"`
-		Prefix    string `help:"List objects with prefix"`
-		Recursive bool   `help:"List objects recursively"`
+		ID           string `help:"ID or name of bucket" json:"-"`
+		Prefix       string `help:"List objects with prefix"`
+		Recursive    bool   `help:"List objects recursively"`
+		Limit        int    `help:"maximal items per request"`
+		PagingMarker string `help:"paging marker"`
 	}
 	R(&BucketListObjectsOptions{}, "bucket-object-list", "List objects in a bucket", func(s *mcclient.ClientSession, args *BucketListObjectsOptions) error {
 		params, err := options.StructToParams(args)
@@ -119,8 +123,11 @@ func init() {
 			return err
 		}
 
-		arrays, _ := result.GetArray("objects")
-		listResult := modulebase.ListResult{Data: arrays}
+		listResult := modulebase.ListResult{}
+		err = result.Unmarshal(&listResult)
+		if err != nil {
+			return err
+		}
 		printList(&listResult, []string{})
 		return nil
 	})
@@ -159,9 +166,10 @@ func init() {
 		Path string `help:"Path to file to upload" required:"true"`
 
 		ContentLength int64  `help:"Content lenght (bytes)" default:"-1"`
-		ContentType   string `help:"Content type"`
 		StorageClass  string `help:"storage CLass"`
 		Acl           string `help:"object acl." choices:"private|public-read|public-read-write"`
+
+		objectshell.ObjectHeaderOptions
 	}
 	R(&BucketUploadObjectsOptions{}, "bucket-object-upload", "Upload an object into a bucket", func(s *mcclient.ClientSession, args *BucketUploadObjectsOptions) error {
 		var body io.Reader
@@ -187,7 +195,9 @@ func init() {
 			return fmt.Errorf("required content-length")
 		}
 
-		err := modules.Buckets.Upload(s, args.ID, args.KEY, body, args.ContentLength, args.ContentType, args.StorageClass, args.Acl)
+		meta := args.ObjectHeaderOptions.Options2Header()
+
+		err := modules.Buckets.Upload(s, args.ID, args.KEY, body, args.ContentLength, args.StorageClass, args.Acl, meta)
 		if err != nil {
 			return err
 		}
@@ -284,6 +294,29 @@ func init() {
 	}
 	R(&BucketAccessInfoOptions{}, "bucket-access-info", "Show backend access info of a bucket", func(s *mcclient.ClientSession, args *BucketAccessInfoOptions) error {
 		result, err := modules.Buckets.GetSpecific(s, args.ID, "access-info", nil)
+		if err != nil {
+			return err
+		}
+		printObject(result)
+		return nil
+	})
+
+	type BucketSetMetadataOptions struct {
+		ID string `help:"ID or name of bucket" json:"-"`
+
+		Key []string `help:"Optional object key" json:"key"`
+
+		objectshell.ObjectHeaderOptions
+	}
+	R(&BucketSetMetadataOptions{}, "bucket-set-metadata", "Set metadata of object", func(s *mcclient.ClientSession, args *BucketSetMetadataOptions) error {
+		input := api.BucketMetadataInput{}
+		input.Key = args.Key
+		input.Metadata = args.ObjectHeaderOptions.Options2Header()
+		err := input.Validate()
+		if err != nil {
+			return err
+		}
+		result, err := modules.Buckets.PerformAction(s, args.ID, "metadata", jsonutils.Marshal(input))
 		if err != nil {
 			return err
 		}

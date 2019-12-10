@@ -26,6 +26,7 @@ import (
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -227,7 +228,7 @@ func (ident *SIdentityProvider) PerformConfig(ctx context.Context, userCred mccl
 		return nil, httperrors.NewInputParameterError("invalid input data")
 	}
 	action, _ := data.GetString("action")
-	err = saveConfigs(action, ident, opts, nil, api.SensitiveDomainConfigMap)
+	err = saveConfigs(action, ident, opts, nil, nil, api.SensitiveDomainConfigMap)
 	if err != nil {
 		return nil, httperrors.NewInternalServerError("saveConfig fail %s", err)
 	}
@@ -297,7 +298,17 @@ func (manager *SIdentityProviderManager) ValidateCreateData(ctx context.Context,
 	if err != nil {
 		return nil, httperrors.NewInputParameterError("parse config error: %s", err)
 	}
-	return manager.SEnabledStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input := apis.EnabledStatusStandaloneResourceCreateInput{}
+	err = data.Unmarshal(&input)
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("unmarshal StandaloneResourceCreateInput fail %s", err)
+	}
+	input, err = manager.SEnabledStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+	data.Update(jsonutils.Marshal(input))
+	return data, nil
 }
 
 func (ident *SIdentityProvider) CustomizeCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
@@ -316,7 +327,7 @@ func (ident *SIdentityProvider) PostCreate(ctx context.Context, userCred mcclien
 		log.Errorf("parse config error %s", err)
 		return
 	}
-	err = saveConfigs("", ident, opts, nil, api.SensitiveDomainConfigMap)
+	err = saveConfigs("", ident, opts, nil, nil, api.SensitiveDomainConfigMap)
 	if err != nil {
 		log.Errorf("saveConfig fail %s", err)
 		return

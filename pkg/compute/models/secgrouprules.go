@@ -68,6 +68,10 @@ type SSecurityGroupRule struct {
 	SecgroupID  string `width:"128" charset:"ascii" create:"required"`
 }
 
+func (self *SSecurityGroupRule) GetId() string {
+	return self.Id
+}
+
 type SecurityGroupRuleSet []SSecurityGroupRule
 
 func (v SecurityGroupRuleSet) Len() int {
@@ -115,13 +119,7 @@ func (manager *SSecurityGroupRuleManager) FilterByOwner(q *sqlchemy.SQuery, user
 	if userCred != nil {
 		sq := SecurityGroupManager.Query("id")
 		ssq := SecurityGroupManager.FilterByOwner(sq, userCred, scope)
-		switch scope {
-		case rbacutils.ScopeProject:
-			return q.In("secgroup_id", ssq.SubQuery())
-		case rbacutils.ScopeDomain:
-			sq = sq.Equals("domain_id", userCred.GetProjectDomainId())
-			return q.In("secgroup_id", ssq.SubQuery())
-		}
+		return q.In("secgroup_id", ssq.SubQuery())
 	}
 	return q
 }
@@ -188,42 +186,43 @@ func (self *SSecurityGroupRule) BeforeInsert() {
 	}
 }
 
-func (manager *SSecurityGroupRuleManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+func (manager *SSecurityGroupRuleManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, input api.SSecgroupRuleCreateInput) (api.SSecgroupRuleCreateInput, error) {
+	data := jsonutils.Marshal(input).(*jsonutils.JSONDict)
+
 	priorityV := validators.NewRangeValidator("priority", 1, 100)
 	priorityV.Optional(true)
 	err := priorityV.Validate(data)
 	if err != nil {
-		return nil, err
+		return input, err
 	}
 
 	secgroupV := validators.NewModelIdOrNameValidator("secgroup", "secgroup", ownerId)
 	err = secgroupV.Validate(data)
 	if err != nil {
-		return nil, err
+		return input, err
 	}
 
 	secgroup := secgroupV.Model.(*SSecurityGroup)
 
 	if !secgroup.IsOwner(userCred) && !userCred.HasSystemAdminPrivilege() {
-		return nil, httperrors.NewForbiddenError("not enough privilege")
+		return input, httperrors.NewForbiddenError("not enough privilege")
 	}
 
-	input := &api.SSecgroupRuleCreateInput{}
-	err = data.Unmarshal(input)
+	err = data.Unmarshal(&input)
 	if err != nil {
-		return nil, httperrors.NewInputParameterError("Failed to unmarshal input: %v", err)
+		return input, httperrors.NewInputParameterError("Failed to unmarshal input: %v", err)
 	}
 
 	err = input.Check()
 	if err != nil {
-		return nil, err
+		return input, err
 	}
 
-	data, err = manager.SResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input.ResourceBaseCreateInput, err = manager.SResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input.ResourceBaseCreateInput)
 	if err != nil {
-		return nil, err
+		return input, err
 	}
-	return input.JSON(input), nil
+	return input, nil
 }
 
 func (self *SSecurityGroupRule) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {

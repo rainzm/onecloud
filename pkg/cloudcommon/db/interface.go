@@ -30,6 +30,11 @@ import (
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
+type IUsage interface {
+	FetchUsage(ctx context.Context) error
+	IsEmpty() bool
+}
+
 type IModelManager interface {
 	lockman.ILockedClass
 	object.IObject
@@ -83,7 +88,7 @@ type IModelManager interface {
 	BatchCreateValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error)
 	// ValidateCreateData dynamic called by dispatcher
 	// ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error)
-	OnCreateComplete(ctx context.Context, items []IModel, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject)
+	OnCreateComplete(ctx context.Context, items []IModel, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject)
 	BatchPreValidate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider,
 		query jsonutils.JSONObject, data *jsonutils.JSONDict, count int) (func(), error)
 
@@ -182,6 +187,8 @@ type IModel interface {
 	CustomizedGetDetailsBody(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error)
 	MarkDeletePreventionOn()
 	MarkDeletePreventionOff()
+
+	GetUsages() []IUsage
 }
 
 type IResourceModelManager interface {
@@ -249,12 +256,23 @@ type IStandaloneModel interface {
 
 	GetIStandaloneModel() IStandaloneModel
 	ClearSchedDescCache() error
+
+	GetMetadata(key string, userCred mcclient.TokenCredential) string
+	GetMetadataJson(key string, userCred mcclient.TokenCredential) jsonutils.JSONObject
+	SetMetadata(ctx context.Context, key string, value interface{}, userCred mcclient.TokenCredential) error
+	SetAllMetadata(ctx context.Context, dictstore map[string]interface{}, userCred mcclient.TokenCredential) error
+	SetUserMetadataValues(ctx context.Context, dictstore map[string]interface{}, userCred mcclient.TokenCredential) error
+	SetUserMetadataAll(ctx context.Context, dictstore map[string]interface{}, userCred mcclient.TokenCredential) error
+	SetCloudMetadataAll(ctx context.Context, dictstore map[string]interface{}, userCred mcclient.TokenCredential) error
+	RemoveMetadata(ctx context.Context, key string, userCred mcclient.TokenCredential) error
+	RemoveAllMetadata(ctx context.Context, userCred mcclient.TokenCredential) error
+	GetAllMetadata(userCred mcclient.TokenCredential) (map[string]string, error)
 }
 
 type IMetadataModel interface {
 	IStandaloneModel
 
-	GetAllMetadata(userCred mcclient.TokenCredential) (map[string]string, error)
+	// GetAllMetadata(userCred mcclient.TokenCredential) (map[string]string, error)
 	GetMetadataHideKeys() []string
 }
 

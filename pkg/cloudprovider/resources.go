@@ -132,6 +132,7 @@ type ICloudRegion interface {
 	GetIElasticcacheById(id string) (ICloudElasticcache, error)
 	CreateIElasticcaches(ec *SCloudElasticCacheInput) (ICloudElasticcache, error)
 
+	GetCloudEnv() string
 	GetProvider() string
 
 	GetICloudEvents(start time.Time, end time.Time, withReadEvent bool) ([]ICloudEvent, error) //获取公有云操作日志接口
@@ -304,6 +305,7 @@ type ICloudVM interface {
 type ICloudNic interface {
 	GetIP() string
 	GetMAC() string
+	InClassicNetwork() bool
 	GetDriver() string
 	GetINetwork() ICloudNetwork
 }
@@ -413,6 +415,7 @@ type ICloudSnapshotPolicy interface {
 }
 
 type ICloudVpc interface {
+	// GetGlobalId() // 若vpc属于globalvpc,此函数返回格式必须是 'region.GetGlobalId()/vpc.GetGlobalId()'
 	ICloudResource
 
 	GetRegion() ICloudRegion
@@ -427,7 +430,6 @@ type ICloudVpc interface {
 
 	GetIWireById(wireId string) (ICloudWire, error)
 	GetINatGateways() ([]ICloudNatGateway, error)
-	GetIGlobalNetworkId() string
 }
 
 type ICloudWire interface {
@@ -930,8 +932,4 @@ type ICloudEvent interface {
 	IsSuccess() bool
 
 	GetCreatedAt() time.Time
-}
-
-type ICloudGlobalnetwork interface {
-	ICloudResource
 }

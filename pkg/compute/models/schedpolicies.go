@@ -23,6 +23,7 @@ import (
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	schedapi "yunion.io/x/onecloud/pkg/apis/scheduler"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -104,7 +105,17 @@ func (manager *SSchedpolicyManager) ValidateCreateData(ctx context.Context, user
 		return nil, err
 	}
 
-	return manager.SStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input := apis.StandaloneResourceCreateInput{}
+	err = data.Unmarshal(&input)
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("unmarshal StandaloneResourceCreateInput fail %s", err)
+	}
+	input, err = manager.SStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+	data.Update(jsonutils.Marshal(input))
+	return data, nil
 }
 
 func (self *SSchedpolicy) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
@@ -197,7 +208,7 @@ func (self *SSchedpolicy) PerformEvaluate(ctx context.Context, userCred mcclient
 
 	log.V(10).Debugf("Schedpolicy evaluate input: %s", params.PrettyString())
 
-	meet, err := conditionparser.Eval(self.Condition, params)
+	meet, err := conditionparser.EvalBool(self.Condition, params)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +226,7 @@ func matchResourceSchedPolicy(
 	policy SSchedpolicy,
 	input *jsonutils.JSONDict,
 ) bool {
-	meet, err := conditionparser.Eval(policy.Condition, input)
+	meet, err := conditionparser.EvalBool(policy.Condition, input)
 	if err != nil {
 		log.Errorf("Eval Condition %s error: %v", policy.Condition, err)
 		return false

@@ -19,12 +19,14 @@ import (
 	"fmt"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	_interface "yunion.io/x/onecloud/pkg/notify/interface"
+	"yunion.io/x/onecloud/pkg/notify/options"
 )
 
 type SConfigManager struct {
@@ -51,7 +53,7 @@ func init() {
 type SConfig struct {
 	SStatusStandaloneResourceBase
 
-	Type      string `width:"15" nullable:"false" create:"required" list:"user""`
+	Type      string `width:"15" nullable:"false" create:"required" list:"user"`
 	KeyText   string `width:"30" nullable:"false" create:"required" list:"user"`
 	ValueText string `width:"100" nullable:"false" create:"required" list:"user"`
 }
@@ -83,12 +85,65 @@ func (self *SConfigManager) GetValue(key, contactType string) (*SConfig, error) 
 }
 
 func (self *SConfigManager) InitializeData() error {
-	sql := fmt.Sprintf("update %s set updated_at=gmt_modified, deleted=is_deleted, created_at=gmt_create, deleted_at=gmt_deleted, update_by=modified_by, delete_by=deleted_by", self.TableSpec().Name())
-	q := sqlchemy.NewRawQuery(sql, "")
+	q := self.Query()
+	q = q.Filter(sqlchemy.OR(sqlchemy.IsNotNull(q.Field("updated_at")), sqlchemy.IsNotNull(q.Field("created_at")),
+		sqlchemy.IsNotNull(q.Field("deleted_at")), sqlchemy.IsTrue(q.Field("deleted")),
+		sqlchemy.IsNotNull(q.Field("update_by")), sqlchemy.IsNotNull(q.Field("delete_by"))))
+	n, err := q.CountWithError()
+	if err != nil {
+		return err
+	}
+	if n <= 0 {
+		log.Debugf("need to init data for %s", self.TableSpec().Name())
+		// need to update
+		sql := fmt.Sprintf("update %s set updated_at=gmt_modified, deleted=is_deleted, created_at=gmt_create, deleted_at=gmt_deleted, update_by=modified_by, delete_by=deleted_by", self.TableSpec().Name())
+		q := sqlchemy.NewRawQuery(sql, "")
+		q.Row()
+		sql = fmt.Sprintf("update %s set type='mobile' where type='sms_aliyun'", self.TableSpec().Name())
+		q = sqlchemy.NewRawQuery(sql, "")
+		q.Row()
+	}
+
+	// init webconsole's config
+	q = self.Query().Equals("type", "webconsole")
+	n, err = q.CountWithError()
+	if err != nil {
+		return err
+	}
+	if n >= 4 {
+		return nil
+	}
+	sql := fmt.Sprintf("update %s set deleted='1' where type='webconsole'", self.TableSpec().Name())
+	q = sqlchemy.NewRawQuery(sql)
 	q.Row()
-	sql = fmt.Sprintf("update %s set type='mobile' where type='sms_aliyun'", self.TableSpec().Name())
-	q = sqlchemy.NewRawQuery(sql, "")
-	q.Row()
+	configs := []SConfig{
+		{
+			Type:      "webconsole",
+			KeyText:   "auth_uri",
+			ValueText: options.Options.AuthURL,
+		},
+		{
+			Type:      "webconsole",
+			KeyText:   "admin_user",
+			ValueText: options.Options.AdminUser,
+		},
+		{
+			Type:      "webconsole",
+			KeyText:   "admin_password",
+			ValueText: options.Options.AdminPassword,
+		},
+		{
+			Type:      "webconsole",
+			KeyText:   "admin_tenant_name",
+			ValueText: options.Options.AdminProject,
+		},
+	}
+	for _, config := range configs {
+		err := self.TableSpec().Insert(&config)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

@@ -18,16 +18,62 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/pkg/errors"
+	"yunion.io/x/pkg/errors"
 
 	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/util/printutils"
 	"yunion.io/x/onecloud/pkg/util/shellutils"
 	"yunion.io/x/onecloud/pkg/util/streamutils"
 )
+
+type ObjectHeaderOptions struct {
+	CacheControl       string `help:"Cache-Control"`
+	ContentType        string `help:"Content-Type"`
+	ContentEncoding    string `help:"Content-Encoding"`
+	ContentLanguage    string `help:"Content-Language"`
+	ContentDisposition string `help:"Content-Disposition"`
+	ContentMD5         string `help:"Content-MD5"`
+
+	Meta []string `help:"header, common seperatored key and value, e.g. max-age:100"`
+}
+
+func (args ObjectHeaderOptions) Options2Header() http.Header {
+	meta := http.Header{}
+	for _, kv := range args.Meta {
+		parts := strings.Split(kv, ":")
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			if len(key) > 0 && len(value) > 0 {
+				meta.Add(key, value)
+			}
+		}
+	}
+	if len(args.CacheControl) > 0 {
+		meta.Set(cloudprovider.META_HEADER_CACHE_CONTROL, args.CacheControl)
+	}
+	if len(args.ContentType) > 0 {
+		meta.Set(cloudprovider.META_HEADER_CONTENT_TYPE, args.ContentType)
+	}
+	if len(args.ContentEncoding) > 0 {
+		meta.Set(cloudprovider.META_HEADER_CONTENT_ENCODING, args.ContentEncoding)
+	}
+	if len(args.ContentMD5) > 0 {
+		meta.Set(cloudprovider.META_HEADER_CONTENT_MD5, args.ContentMD5)
+	}
+	if len(args.ContentLanguage) > 0 {
+		meta.Set(cloudprovider.META_HEADER_CONTENT_LANGUAGE, args.ContentLanguage)
+	}
+	if len(args.ContentDisposition) > 0 {
+		meta.Set(cloudprovider.META_HEADER_CONTENT_DISPOSITION, args.ContentDisposition)
+	}
+	return meta
+}
 
 func S3Shell() {
 	type BucketListOptions struct {
@@ -145,17 +191,22 @@ func S3Shell() {
 	type BucketListObjectsOptions struct {
 		BUCKET string `help:"name of bucket to list objects"`
 		Prefix string `help:"prefix"`
+		Limit  int    `help:"limit per page request" default:"20"`
+		Marker string `help:"offset marker"`
 	}
 	shellutils.R(&BucketListObjectsOptions{}, "bucket-list-object", "List objects in a bucket", func(cli cloudprovider.ICloudRegion, args *BucketListObjectsOptions) error {
 		bucket, err := cli.GetIBucketById(args.BUCKET)
 		if err != nil {
 			return err
 		}
-		objects, err := bucket.GetIObjects(args.Prefix, true)
+		objects, marker, err := cloudprovider.GetPagedObjects(bucket, args.Prefix, true, args.Marker, args.Limit)
 		if err != nil {
 			return err
 		}
 		printutils.PrintGetterList(objects, []string{"key", "size_bytes"})
+		if len(marker) > 0 {
+			fmt.Println("Next marker:", marker)
+		}
 		return nil
 	})
 
@@ -164,11 +215,14 @@ func S3Shell() {
 		if err != nil {
 			return err
 		}
-		objects, err := bucket.GetIObjects(args.Prefix, false)
+		objects, marker, err := cloudprovider.GetPagedObjects(bucket, args.Prefix, false, args.Marker, args.Limit)
 		if err != nil {
 			return err
 		}
 		printutils.PrintGetterList(objects, []string{"key", "size_bytes"})
+		if len(marker) > 0 {
+			fmt.Println("Next marker:", marker)
+		}
 		return nil
 	})
 
@@ -196,9 +250,11 @@ func S3Shell() {
 
 		BlockSize int64 `help:"blocksz in MB" default:"100"`
 
-		Acl          string `help:"acl" choices:"private|public-read|public-read-write"`
-		ContentType  string `help:"content-type"`
+		Acl string `help:"acl" choices:"private|public-read|public-read-write"`
+
 		StorageClass string `help:"storage class"`
+
+		ObjectHeaderOptions
 	}
 	shellutils.R(&BucketPutObjectOptions{}, "put-object", "Put object into a bucket", func(cli cloudprovider.ICloudRegion, args *BucketPutObjectOptions) error {
 		bucket, err := cli.GetIBucketById(args.BUCKET)
@@ -223,7 +279,8 @@ func S3Shell() {
 		} else {
 			input = os.Stdout
 		}
-		err = cloudprovider.UploadObject(context.Background(), bucket, args.KEY, args.BlockSize*1000*1000, input, fSize, args.ContentType, cloudprovider.TBucketACLType(args.Acl), args.StorageClass, true)
+		meta := args.ObjectHeaderOptions.Options2Header()
+		err = cloudprovider.UploadObject(context.Background(), bucket, args.KEY, args.BlockSize*1000*1000, input, fSize, cloudprovider.TBucketACLType(args.Acl), args.StorageClass, meta, true)
 		if err != nil {
 			return err
 		}
@@ -241,6 +298,19 @@ func S3Shell() {
 			return err
 		}
 		err = bucket.DeleteObject(context.Background(), args.KEY)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Delete success\n")
+		return nil
+	})
+
+	shellutils.R(&BucketDeleteObjectOptions{}, "delete-prefix", "Delete object from a bucket", func(cli cloudprovider.ICloudRegion, args *BucketDeleteObjectOptions) error {
+		bucket, err := cli.GetIBucketById(args.BUCKET)
+		if err != nil {
+			return err
+		}
+		err = cloudprovider.DeletePrefix(context.Background(), bucket, args.KEY)
 		if err != nil {
 			return err
 		}
@@ -364,6 +434,8 @@ func S3Shell() {
 		Debug     bool   `help:"show debug info"`
 		BlockSize int64  `help:"block size in MB"`
 		Native    bool   `help:"Use native copy"`
+
+		ObjectHeaderOptions
 	}
 	shellutils.R(&BucketObjectCopyOptions{}, "object-copy", "Copy object", func(cli cloudprovider.ICloudRegion, args *BucketObjectCopyOptions) error {
 		ctx := context.Background()
@@ -379,18 +451,62 @@ func S3Shell() {
 		if err != nil {
 			return err
 		}
+		meta := args.ObjectHeaderOptions.Options2Header()
 		if args.Native {
-			err = dstBucket.CopyObject(ctx, args.DSTKEY, args.SRC, args.SRCKEY, srcObj.GetContentType(), srcObj.GetAcl(), srcObj.GetStorageClass())
+			err = dstBucket.CopyObject(ctx, args.DSTKEY, args.SRC, args.SRCKEY, srcObj.GetAcl(), srcObj.GetStorageClass(), meta)
 			if err != nil {
 				return err
 			}
 		} else {
-			err = cloudprovider.CopyObject(ctx, args.BlockSize*1000*1000, dstBucket, args.DSTKEY, srcBucket, args.SRCKEY, args.Debug)
+			err = cloudprovider.CopyObject(ctx, args.BlockSize*1000*1000, dstBucket, args.DSTKEY, srcBucket, args.SRCKEY, meta, args.Debug)
 			if err != nil {
 				return err
 			}
 		}
 		fmt.Println("Success!")
+		return nil
+	})
+
+	type ObjectMetaOptions struct {
+		BUCKET string `help:"bucket name"`
+		KEY    string `help:"object key"`
+	}
+	shellutils.R(&ObjectMetaOptions{}, "object-meta", "Show object meta header", func(cli cloudprovider.ICloudRegion, args *ObjectMetaOptions) error {
+		bucket, err := cli.GetIBucketByName(args.BUCKET)
+		if err != nil {
+			return err
+		}
+		obj, err := cloudprovider.GetIObject(bucket, args.KEY)
+		if err != nil {
+			return err
+		}
+		meta := obj.GetMeta()
+		for k, v := range meta {
+			fmt.Println(k, ": ", v[0])
+		}
+		return nil
+	})
+
+	type ObjectSetMetaOptions struct {
+		BUCKET string `help:"bucket name"`
+		KEY    string `help:"object key"`
+
+		ObjectHeaderOptions
+	}
+	shellutils.R(&ObjectSetMetaOptions{}, "object-set-meta", "Set object meta header", func(cli cloudprovider.ICloudRegion, args *ObjectSetMetaOptions) error {
+		bucket, err := cli.GetIBucketByName(args.BUCKET)
+		if err != nil {
+			return err
+		}
+		obj, err := cloudprovider.GetIObject(bucket, args.KEY)
+		if err != nil {
+			return err
+		}
+		meta := args.ObjectHeaderOptions.Options2Header()
+		err = obj.SetMeta(context.Background(), meta)
+		if err != nil {
+			return err
+		}
 		return nil
 	})
 }

@@ -37,6 +37,7 @@ import (
 )
 
 func init() {
+
 	R(&options.ServerListOptions{}, "server-list", "List virtual servers", func(s *mcclient.ClientSession, opts *options.ServerListOptions) error {
 		params, err := options.ListStructToParams(opts)
 		if err != nil {
@@ -454,6 +455,19 @@ func init() {
 		srv, e := modules.Servers.PerformAction(s, opts.ID, "deploy", params.JSON(params))
 		if e != nil {
 			return e
+		}
+		printObject(srv)
+		return nil
+	})
+
+	R(&options.ServerModifySrcCheckOptions{}, "server-modify-src-check", "Modify src ip, mac check settings", func(s *mcclient.ClientSession, opts *options.ServerModifySrcCheckOptions) error {
+		params, err := options.StructToParams(opts)
+		if err != nil {
+			return err
+		}
+		srv, err := modules.Servers.PerformAction(s, opts.ID, "modify-src-check", params)
+		if err != nil {
+			return err
 		}
 		printObject(srv)
 		return nil

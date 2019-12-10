@@ -16,12 +16,15 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/sets"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
@@ -93,26 +96,75 @@ func (self *SContactManager) FilterByOwner(q *sqlchemy.SQuery, owner mcclient.II
 }
 
 func (self *SContactManager) InitializeData() error {
+	q := self.Query()
+	q = q.Filter(sqlchemy.OR(sqlchemy.IsNotNull(q.Field("updated_at")), sqlchemy.IsTrue(q.Field("deleted"))))
+	n, err := q.CountWithError()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		log.Debugf("no need to init data for %s", self.TableSpec().Name())
+		// no need to init data
+		return nil
+	}
+	log.Debugf("need to init data for %s", self.TableSpec().Name())
 	sql := fmt.Sprintf("update %s set updated_at=update_at, deleted=is_deleted", self.TableSpec().Name())
-	q := sqlchemy.NewRawQuery(sql, "")
+	q = sqlchemy.NewRawQuery(sql, "")
 	q.Row()
 	return nil
 }
 
-func (self *SContactManager) FetchByUIDs(uids []string) ([]SContact, error) {
+func (self *SContactManager) FetchByUIDs(ctx context.Context, uids []string, uname bool) ([]SContact, error) {
+	var err error
+	if uname {
+		uids, err = self._UIDsFromUIDOrName(ctx, uids)
+		if err != nil {
+			return nil, err
+		}
+	}
 	q := self.Query()
 	q = q.Filter(sqlchemy.In(q.Field("uid"), uids))
 	records := make([]SContact, 0, len(uids))
-	err := db.FetchModelObjects(self, q, &records)
+	err = db.FetchModelObjects(self, q, &records)
 	if err != nil {
 		return nil, err
 	}
 	return records, nil
 }
 
+func (self *SContactManager) _UIDsFromUIDOrName(ctx context.Context, uidStrs []string) ([]string, error) {
+	users, err := utils.GetUsersWithoutRemote(ctx, uidStrs)
+	if err != nil {
+		return nil, err
+	}
+	uids := make([]string, 0, len(uidStrs))
+	uidSet := sets.NewString(uidStrs...)
+	var (
+		uid   string
+		uname string
+	)
+	for i := range users {
+		uid = users[i].Id
+		uname = users[i].Name
+		if uidSet.Has(uid) {
+			uids = append(uids, uid)
+			uidSet.Delete(uid)
+			continue
+		}
+		if uidSet.Has(uname) {
+			uids = append(uids, uid)
+			uidSet.Delete(uname)
+			continue
+		}
+	}
+	for _, uid = range uidSet.UnsortedList() {
+		uids = append(uids, uid)
+	}
+	return uids, nil
+}
+
 func (self *SContactManager) FetchByUIDAndCType(uid string, contactTypes []string) ([]SContact, error) {
-	q := self.Query("id", "uid", "contact_type", "contact", "enabled")
-	q = q.Filter(sqlchemy.AND(sqlchemy.Equals(q.Field("uid"), uid), sqlchemy.In(q.Field("contact_type"), contactTypes)))
+	q := self.Query("id", "uid", "contact_type", "contact", "enabled").Equals("uid", uid).In("contact_type", contactTypes)
 	records := make([]SContact, 0, len(contactTypes))
 	err := db.FetchModelObjects(self, q, &records)
 	if err != nil {
@@ -122,8 +174,7 @@ func (self *SContactManager) FetchByUIDAndCType(uid string, contactTypes []strin
 }
 
 func (self *SContactManager) FetchByMore(uid, contact, contactType string) ([]SContact, error) {
-	q := self.Query()
-	q.Filter(sqlchemy.AND(sqlchemy.Equals(q.Field("uid"), uid), sqlchemy.Equals(q.Field("contact"), contact), sqlchemy.Equals(q.Field("contact_type"), contactType)))
+	q := self.Query().Equals("uid", uid).Equals("contact", contact).Equals("contact_type", contactType)
 	records := make([]SContact, 0, 1)
 	err := db.FetchModelObjects(self, q, &records)
 	if err != nil {
@@ -135,15 +186,22 @@ func (self *SContactManager) FetchByMore(uid, contact, contactType string) ([]SC
 func (self *SContact) GetCustomizeColumns(ctx context.Context, userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject) *jsonutils.JSONDict {
 
-	ret, _ := self.getMoreDetail(ctx, userCred, query)
+	extra := self.SStandaloneResourceBase.GetCustomizeColumns(ctx, userCred, query)
+	ret, err := self.getMoreDetail(ctx, userCred, extra)
+	if err != nil {
+		log.Errorf("getMoreDetail error: %s", err)
+	}
 	return ret
 }
 
 func (self *SContact) getMoreDetail(ctx context.Context, userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject) (*jsonutils.JSONDict, error) {
+	ret *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
 
-	ret := jsonutils.NewDict()
 	uname, err := utils.GetUsernameByID(ctx, self.UID)
+	if errors.Cause(err) == sql.ErrNoRows {
+		uname = self.UID
+		err = nil
+	}
 	if err != nil {
 		return ret, err
 	}
@@ -163,8 +221,11 @@ func (self *SContact) getMoreDetail(ctx context.Context, userCred mcclient.Token
 
 func (self *SContact) GetExtraDetail(ctx context.Context, userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject) (*jsonutils.JSONDict, error) {
-
-	return self.getMoreDetail(ctx, userCred, query)
+	extra, err := self.SStandaloneResourceBase.GetExtraDetails(ctx, userCred, query)
+	if err != nil {
+		return nil, err
+	}
+	return self.getMoreDetail(ctx, userCred, extra)
 }
 
 func (self *SContactManager) ListItemFilter(ctx context.Context, q *sqlchemy.SQuery, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (*sqlchemy.SQuery, error) {
@@ -215,6 +276,12 @@ func (self *SContactManager) GetAllNotify(ctx context.Context, ids []string, con
 
 	q := self.Query()
 	if !group {
+		if v := ctx.Value("uname"); v != nil {
+			ids, err = self._UIDsFromUIDOrName(ctx, ids)
+			if err != nil {
+				return nil, errors.Wrap(err, "fail to transfer array of UID or Uname to UIDs")
+			}
+		}
 		uids = ids
 	} else {
 		uid := make([]string, 0)
@@ -225,6 +292,7 @@ func (self *SContactManager) GetAllNotify(ctx context.Context, ids []string, con
 			}
 			uid = append(uid, tmpUids...)
 		}
+		uids = uid
 	}
 	q.Filter(sqlchemy.AND(sqlchemy.In(q.Field("uid"), uids), sqlchemy.Equals(q.Field("contact_type"),
 		contactType), sqlchemy.Equals(q.Field("status"), CONTACT_VERIFIED)))

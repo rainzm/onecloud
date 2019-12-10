@@ -36,6 +36,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/logclient"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
 type SBaremetalGuestDriver struct {
@@ -55,12 +56,14 @@ func (self *SBaremetalGuestDriver) GetProvider() string {
 	return api.CLOUD_PROVIDER_ONECLOUD
 }
 
-func (self *SBaremetalGuestDriver) GetQuotaPlatformID() []string {
-	return []string{
-		api.CLOUD_ENV_ON_PREMISE,
-		api.CLOUD_PROVIDER_ONECLOUD,
-		api.HYPERVISOR_BAREMETAL,
-	}
+func (self *SBaremetalGuestDriver) GetComputeQuotaKeys(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, brand string) models.SComputeResourceKeys {
+	keys := models.SComputeResourceKeys{}
+	keys.SBaseQuotaKeys = quotas.OwnerIdQuotaKeys(scope, ownerId)
+	keys.CloudEnv = api.CLOUD_ENV_ON_PREMISE
+	keys.Provider = api.CLOUD_PROVIDER_ONECLOUD
+	// ignore brand
+	keys.Hypervisor = api.HYPERVISOR_BAREMETAL
+	return keys
 }
 
 func (self *SBaremetalGuestDriver) GetDefaultSysDiskBackend() string {
@@ -124,7 +127,7 @@ func (self *SBaremetalGuestDriver) ValidateResizeDisk(guest *models.SGuest, disk
 	return httperrors.NewUnsupportOperationError("Cannot resize disk for baremtal")
 }
 
-func (self *SBaremetalGuestDriver) GetNamedNetworkConfiguration(guest *models.SGuest, userCred mcclient.TokenCredential, host *models.SHost, netConfig *api.NetworkConfig) (*models.SNetwork, []models.SNicConfig, api.IPAllocationDirection) {
+func (self *SBaremetalGuestDriver) GetNamedNetworkConfiguration(guest *models.SGuest, ctx context.Context, userCred mcclient.TokenCredential, host *models.SHost, netConfig *api.NetworkConfig) (*models.SNetwork, []models.SNicConfig, api.IPAllocationDirection, bool) {
 	netifs, net := host.GetNetinterfacesWithIdAndCredential(netConfig.Network, userCred, netConfig.Reserved)
 	if netifs != nil {
 		nicCnt := 1
@@ -133,7 +136,8 @@ func (self *SBaremetalGuestDriver) GetNamedNetworkConfiguration(guest *models.SG
 		}
 		if len(netifs) < nicCnt {
 			if netConfig.RequireTeaming {
-				return net, nil, ""
+				log.Errorf("not enough network interfaces, want %d got %d", nicCnt, len(netifs))
+				return net, nil, "", false
 			}
 			nicCnt = len(netifs)
 		}
@@ -146,9 +150,17 @@ func (self *SBaremetalGuestDriver) GetNamedNetworkConfiguration(guest *models.SG
 			}
 			nicConfs = append(nicConfs, nicConf)
 		}
-		return net, nicConfs, api.IPAllocationStepup
+		reuseAddr := false
+		hn := host.GetAttach2Network(netConfig.Network)
+		if hn != nil && netConfig.Address == "" && options.Options.BaremetalServerReuseHostIp {
+			// try to reuse host network IP address
+			netConfig.Address = hn.IpAddr
+			reuseAddr = true
+		}
+
+		return net, nicConfs, api.IPAllocationStepup, reuseAddr
 	}
-	return net, nil, ""
+	return net, nil, "", false
 }
 
 func (self *SBaremetalGuestDriver) GetRandomNetworkTypes() []string {
@@ -187,10 +199,10 @@ func (self *SBaremetalGuestDriver) Attach2RandomNetwork(guest *models.SGuest, ct
 		}
 		if net != nil {
 			netsAvaiable = append(netsAvaiable, *net)
-			if _, exist := netifIndexs[net.Id]; !exist {
-				netifIndexs[net.Id] = make([]models.SNetInterface, 0)
+			if _, exist := netifIndexs[net.WireId]; !exist {
+				netifIndexs[net.WireId] = make([]models.SNetInterface, 0)
 			}
-			netifIndexs[net.Id] = append(netifIndexs[net.Id], netifs[idx])
+			netifIndexs[net.WireId] = append(netifIndexs[net.WireId], netifs[idx])
 		}
 	}
 	if len(netsAvaiable) == 0 {
@@ -198,7 +210,7 @@ func (self *SBaremetalGuestDriver) Attach2RandomNetwork(guest *models.SGuest, ct
 	}
 	net := models.ChooseCandidateNetworks(netsAvaiable, netConfig.Exit, netTypes)
 	if net != nil {
-		netifs := netifIndexs[net.Id]
+		netifs := netifIndexs[net.WireId]
 		nicConfs := make([]models.SNicConfig, 0)
 		nicCnt := 1
 		if netConfig.RequireTeaming || netConfig.TryTeaming {
@@ -218,7 +230,15 @@ func (self *SBaremetalGuestDriver) Attach2RandomNetwork(guest *models.SGuest, ct
 			}
 			nicConfs = append(nicConfs, nicConf)
 		}
-		return guest.Attach2Network(ctx, userCred, net, pendingUsage, "", netConfig.Driver, netConfig.BwLimit, netConfig.Vip, false, api.IPAllocationStepup, false, nicConfs)
+		address := ""
+		reuseAddr := false
+		hn := host.GetAttach2Network(net.Id)
+		if hn != nil && options.Options.BaremetalServerReuseHostIp {
+			// try to reuse host network IP address
+			address = hn.IpAddr
+			reuseAddr = true
+		}
+		return guest.Attach2Network(ctx, userCred, net, pendingUsage, address, netConfig.Driver, netConfig.BwLimit, netConfig.Vip, false, api.IPAllocationStepup, false, reuseAddr, nicConfs)
 	}
 	return nil, fmt.Errorf("No appropriate host virtual network...")
 }

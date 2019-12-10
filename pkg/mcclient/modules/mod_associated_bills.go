@@ -12,9 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compute
+package modules
 
-const (
-	GLOBAL_NETWORK_STATUS_AVAILABLE = "available"
-	GLOBAL_NETWORK_STATUS_UNKNOWN   = "unknown"
+import "yunion.io/x/onecloud/pkg/mcclient/modulebase"
+
+var (
+	AssociatedBills modulebase.ResourceManager
 )
+
+func init() {
+	AssociatedBills = NewMeterManager("associated_bill", "associated_bills",
+		[]string{"account", "brand", "resource_id", "resource_name", "amount"},
+		[]string{},
+	)
+	register(&AssociatedBills)
+}

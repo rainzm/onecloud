@@ -26,21 +26,36 @@ import (
 	"github.com/vmware/govmomi/property"
 	"github.com/vmware/govmomi/session"
 	"github.com/vmware/govmomi/view"
+	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/utils"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
+	"yunion.io/x/onecloud/pkg/hostman/hostutils"
 	"yunion.io/x/onecloud/pkg/multicloud"
 )
 
 const (
 	CLOUD_PROVIDER_VMWARE = api.CLOUD_PROVIDER_VMWARE
 )
+
+var (
+	defaultDc mo.Datacenter
+
+	defaultDcId = "esxi-default-datacenter"
+)
+
+func init() {
+	defaultDc.ManagedEntity.Name = "Datacenter"
+	defaultDc.ManagedEntity.ExtensibleManagedObject.Self.Type = "Datacenter"
+	defaultDc.ManagedEntity.ExtensibleManagedObject.Self.Value = defaultDcId
+}
 
 type SESXiClient struct {
 	cloudprovider.SFakeOnPremiseRegion
@@ -86,6 +101,30 @@ func NewESXiClient2(providerId string, providerName string, host string, port in
 	return cli, nil
 }
 
+func NewESXiClientFromJson(ctx context.Context, input jsonutils.JSONObject) (*SESXiClient, SESXiAccessInfo, error) {
+	accessInfo := SESXiAccessInfo{}
+	err := input.Unmarshal(&accessInfo)
+	if err != nil {
+		return nil, SESXiAccessInfo{}, hostutils.ParamsError
+	}
+	passwd := accessInfo.Password
+	if len(accessInfo.VcenterId) > 0 {
+		tmp, err := utils.DescryptAESBase64(accessInfo.VcenterId, passwd)
+		if err == nil {
+			passwd = tmp
+		}
+	}
+	client, err := NewESXiClient("", "", accessInfo.Host, accessInfo.Port, accessInfo.Account, passwd)
+	if err != nil {
+		return nil, accessInfo, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client.context = ctx
+	return client, accessInfo, nil
+}
+
 func (cli *SESXiClient) getUrl() string {
 	if cli.port == 443 || cli.port == 0 {
 		return fmt.Sprintf("https://%s", cli.host)
@@ -117,6 +156,8 @@ func (cli *SESXiClient) connect() error {
 	}
 
 	cli.client = govmcli
+
+	defaultDc.ManagedEntity.Parent = &cli.client.ServiceContent.RootFolder
 
 	return nil
 }
@@ -169,27 +210,80 @@ func (cli *SESXiClient) GetUUID() string {
 	return about.InstanceUuid
 }
 
+func (cli *SESXiClient) fetchDatacentersFromHosts() error {
+	var hosts []mo.HostSystem
+	err := cli.scanAllMObjects(HOST_SYSTEM_PROPS, &hosts)
+	if err != nil {
+		return errors.Wrap(err, "cli.scanAllMObjects host")
+	}
+	dcList := make([]*SDatacenter, 0)
+	for i := 0; i < len(hosts); i += 1 {
+		me := newManagedObject(cli, &hosts[i], nil)
+		dcme := me.findInParents("Datacenter")
+		if dcme == nil {
+			return cloudprovider.ErrNotFound
+		}
+		_, err := findDatacenterByMoId(dcList, dcme.Self.Value)
+		if err == nil {
+			continue
+		}
+		var moDc mo.Datacenter
+		err = cli.reference2Object(dcme.Self, DATACENTER_PROPS, &moDc)
+		if err != nil {
+			return errors.Wrap(err, "cli.reference2Object")
+		}
+		dc, err := cli.newDatacenterFromMo(&moDc)
+		if err != nil {
+			return errors.Wrap(err, "cli.newDatacenterFromMo")
+		}
+		dcList = append(dcList, dc)
+	}
+	cli.datacenters = dcList
+	return nil
+}
+
+func (cli *SESXiClient) fetchFakeDatacenter() error {
+	dc, err := cli.newDatacenterFromMo(&defaultDc)
+	if err != nil {
+		return errors.Wrap(err, "newDatacenterFromMo")
+	}
+	cli.datacenters = []*SDatacenter{dc}
+	return nil
+}
+
 func (cli *SESXiClient) fetchDatacenters() error {
 	var dcs []mo.Datacenter
 	err := cli.scanAllMObjects(DATACENTER_PROPS, &dcs)
 	if err != nil {
-		return err
+		// log.Debugf("cli.scanAllMObjects datacenter fail %s, try cli.fetchDatacentersFromHosts", err)
+		// err := cli.fetchDatacentersFromHosts()
+		// if err != nil {
+		log.Debugf("cli.fetchDatacentersFromHosts fail %s, try cli.fetchFakeDatacenter", err)
+		return cli.fetchFakeDatacenter()
+		// }
 	}
 	cli.datacenters = make([]*SDatacenter, len(dcs))
 	for i := 0; i < len(dcs); i += 1 {
-		cli.datacenters[i] = newDatacenter(cli, &dcs[i])
-
-		err = cli.datacenters[i].scanHosts()
+		dc, err := cli.newDatacenterFromMo(&dcs[i])
 		if err != nil {
-			return err
+			return errors.Wrap(err, "cli.newDatacenterFromMo")
 		}
-
-		err = cli.datacenters[i].scanDatastores()
-		if err != nil {
-			return err
-		}
+		cli.datacenters[i] = dc
 	}
 	return nil
+}
+
+func (cli *SESXiClient) newDatacenterFromMo(mo *mo.Datacenter) (*SDatacenter, error) {
+	dc := newDatacenter(cli, mo)
+	err := dc.scanHosts()
+	if err != nil {
+		return nil, errors.Wrap(err, "dc.scanHosts")
+	}
+	err = dc.scanDatastores()
+	if err != nil {
+		return nil, errors.Wrap(err, "dc.scanDatastores")
+	}
+	return dc, nil
 }
 
 func (cli *SESXiClient) scanAllMObjects(props []string, dst interface{}) error {
@@ -206,16 +300,14 @@ func (cli *SESXiClient) scanMObjects(folder types.ManagedObjectReference, props 
 
 	v, err := m.CreateContainerView(cli.context, folder, []string{resType}, true)
 	if err != nil {
-		log.Fatalf("%s", err)
-		return err
+		return errors.Wrapf(err, "m.CreateContainerView %s", resType)
 	}
 
 	defer v.Destroy(cli.context)
 
 	err = v.Retrieve(cli.context, []string{resType}, props, dst)
 	if err != nil {
-		log.Fatalf("%s", err)
-		return err
+		return errors.Wrapf(err, "v.Retrieve %s", resType)
 	}
 
 	return nil
@@ -255,8 +347,16 @@ func (cli *SESXiClient) FindDatacenterByMoId(dcId string) (*SDatacenter, error) 
 	if err != nil {
 		return nil, err
 	}
+	return findDatacenterByMoId(dcs, dcId)
+}
+
+func findDatacenterByMoId(dcs []*SDatacenter, dcId string) (*SDatacenter, error) {
 	for i := 0; i < len(dcs); i += 1 {
 		if dcs[i].GetId() == dcId {
+			return dcs[i], nil
+		}
+		// defaultDcId means no premision to get datacenter, so return fake dc
+		if dcs[i].GetId() == defaultDcId {
 			return dcs[i], nil
 		}
 	}
@@ -315,7 +415,11 @@ func (cli *SESXiClient) FindHostByIp(hostIp string) (*SHost, error) {
 		return nil, err
 	}
 
-	return NewHost(cli, &host, nil), nil
+	h := NewHost(cli, &host, nil)
+	if h == nil {
+		return nil, errors.Wrap(errors.ErrInvalidStatus, "empty host mo")
+	}
+	return h, nil
 }
 
 func (cli *SESXiClient) acquireCloneTicket() (string, error) {
@@ -329,4 +433,77 @@ func (cli *SESXiClient) IsVCenter() bool {
 
 func (cli *SESXiClient) IsValid() bool {
 	return cli.client.Client.Valid()
+}
+
+func (cli *SESXiClient) FindVMByPrivateID(idstr string) (*SVirtualMachine, error) {
+	searchIndex := object.NewSearchIndex(cli.client.Client)
+	instanceUuid := true
+	vmRef, err := searchIndex.FindByUuid(cli.context, nil, idstr, true, &instanceUuid)
+	if err != nil {
+		return nil, errors.Wrap(err, "searchIndex.FindByUuid fail")
+	}
+	if vmRef == nil {
+		return nil, fmt.Errorf("cannot find %s", idstr)
+	}
+	var vm mo.VirtualMachine
+	err = cli.reference2Object(vmRef.Reference(), VIRTUAL_MACHINE_PROPS, &vm)
+	if err != nil {
+		return nil, errors.Wrap(err, "reference2Object fail")
+	}
+
+	return NewVirtualMachine(cli, &vm, nil), nil
+}
+
+func (cli *SESXiClient) DoExtendDiskOnline(_vm *SVirtualMachine, _disk *SVirtualDisk, newSizeMb int64) error {
+	disk := _disk.getVirtualDisk()
+	disk.CapacityInKB = newSizeMb * 1024
+	devSepc := types.VirtualDeviceConfigSpec{Operation: types.VirtualDeviceConfigSpecOperationEdit, Device: disk}
+	spec := types.VirtualMachineConfigSpec{DeviceChange: []types.BaseVirtualDeviceConfigSpec{&devSepc}}
+	vm := object.NewVirtualMachine(cli.client.Client, _vm.getVirtualMachine().Reference())
+	task, err := vm.Reconfigure(cli.context, spec)
+	if err != nil {
+		return errors.Wrapf(err, "vm reconfigure failed")
+	}
+	return task.Wait(cli.context)
+}
+
+func (cli *SESXiClient) ExtendDisk(url string, newSizeMb int64) error {
+	param := types.ExtendVirtualDisk_Task{
+		This:          *cli.client.Client.ServiceContent.VirtualDiskManager,
+		Name:          url,
+		NewCapacityKb: newSizeMb * 1024,
+	}
+	response, err := methods.ExtendVirtualDisk_Task(cli.context, cli.client, &param)
+	if err != nil {
+		return errors.Wrapf(err, "extend virtualdisk task failed")
+	}
+	log.Debugf("extend virtual disk task response: %s", response.Returnval.String())
+	return nil
+}
+
+type SESXiAccessInfo struct {
+	VcenterId string
+	Password  string
+	Host      string
+	Port      int
+	Account   string
+	PrivateId string
+}
+
+func (cli *SESXiClient) CopyDisk(ctx context.Context, src, dst string, isForce bool) error {
+	dm := object.NewVirtualDiskManager(cli.client.Client)
+	task, err := dm.CopyVirtualDisk(ctx, src, nil, dst, nil, nil, isForce)
+	if err != nil {
+		return err
+	}
+	return task.Wait(ctx)
+}
+
+func (cli *SESXiClient) MoveDisk(ctx context.Context, src, dst string, isForce bool) error {
+	dm := object.NewVirtualDiskManager(cli.client.Client)
+	task, err := dm.MoveVirtualDisk(ctx, src, nil, dst, nil, isForce)
+	if err != nil {
+		return err
+	}
+	return task.Wait(ctx)
 }

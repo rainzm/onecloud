@@ -21,6 +21,7 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
@@ -71,6 +72,10 @@ func (region *SRegion) IsEmulated() bool {
 
 func (region *SRegion) GetProvider() string {
 	return CLOUD_PROVIDER_OPENSTACK
+}
+
+func (region *SRegion) GetCloudEnv() string {
+	return ""
 }
 
 func (region *SRegion) GetGeographicInfo() cloudprovider.SGeographicInfo {
@@ -133,7 +138,7 @@ func (region *SRegion) GetIStorageById(id string) (cloudprovider.ICloudStorage, 
 		istore, err := izones[i].GetIStorageById(id)
 		if err == nil {
 			return istore, nil
-		} else if err != cloudprovider.ErrNotFound {
+		} else if errors.Cause(err) != cloudprovider.ErrNotFound {
 			return nil, err
 		}
 	}

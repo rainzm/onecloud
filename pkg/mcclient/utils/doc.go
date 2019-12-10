@@ -12,24 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package modules
-
-import (
-	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
-)
-
-type GlobalNetworkManager struct {
-	modulebase.ResourceManager
-}
-
-var (
-	GlobalNetworks GlobalNetworkManager
-)
-
-func init() {
-	GlobalNetworks = GlobalNetworkManager{NewComputeManager("globalnetwork", "globalnetworks",
-		[]string{},
-		[]string{"ID", "Name", "Description"})}
-
-	registerCompute(&GlobalNetworks)
-}
+package utils // import "yunion.io/x/onecloud/pkg/mcclient/utils"

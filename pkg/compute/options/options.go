@@ -50,7 +50,8 @@ type ComputeOptions struct {
 	DefaultBandwidth int `default:"1000" help:"Default bandwidth"`
 	DefaultMtu       int `default:"1500" help:"Default network mtu"`
 
-	DefaultCpuQuota            int `help:"Common CPU quota per tenant, default 200" default:"200"`
+	DefaultServerQuota         int `default:"50" help:"Common Server quota per tenant, default 50"`
+	DefaultCpuQuota            int `default:"200" help:"Common CPU quota per tenant, default 200"`
 	DefaultMemoryQuota         int `default:"204800" help:"Common memory quota per tenant in MB, default 200G"`
 	DefaultStorageQuota        int `default:"12288000" help:"Common storage quota per tenant in MB, default 12T"`
 	DefaultPortQuota           int `default:"200" help:"Common network port quota per tenant, default 200"`
@@ -63,11 +64,17 @@ type ComputeOptions struct {
 	DefaultSecgroupQuota       int `default:"50" help:"Common security group quota per tenant, default 50"`
 	DefaultIsolatedDeviceQuota int `default:"200" help:"Common isolated device quota per tenant, default 200"`
 	DefaultSnapshotQuota       int `default:"10" help:"Common snapshot quota per tenant, default 10"`
-	DefaultBucketQuota         int `default:"100" help:"Common bucket quota per tenant, default 100"`
-	DefaultObjectGBQuota       int `default:"100" help:"Common object size quota per tenant in GB, default 100GB"`
-	DefaultObjectCntQuota      int `default:"500" help:"Common object count quota per tenant, default 500"`
 
-	SystemAdminQuotaCheck bool `help:"Enable quota check for system admin, default False" default:"false"`
+	DefaultBucketQuota    int `default:"100" help:"Common bucket quota per tenant, default 100"`
+	DefaultObjectGBQuota  int `default:"500" help:"Common object size quota per tenant in GB, default 500GB"`
+	DefaultObjectCntQuota int `default:"5000" help:"Common object count quota per tenant, default 5000"`
+
+	DefaultLoadbalancerQuota int `default:"10" help:"Common loadbalancer quota per tenant, default 10"`
+	DefaultRdsQuota          int `default:"10" help:"Common RDS quota per tenant, default 10"`
+	DefaultCacheQuota        int `default:"10" help:"Common ElasticCache quota per tenant, default 10"`
+
+	SystemAdminQuotaCheck         bool `help:"Enable quota check for system admin, default False" default:"false"`
+	CloudaccountHealthStatusCheck bool `help:"Enable cloudaccount health status check, default True" default:"true"`
 
 	BaremetalPreparePackageUrl string `help:"Baremetal online register package"`
 
@@ -111,6 +118,8 @@ type ComputeOptions struct {
 
 	DisconnectedCloudAccountRetryProbeIntervalHours int `help:"interval to wait to probe status of a disconnected cloud account" default:"24"`
 
+	BaremetalServerReuseHostIp bool `help:"baremetal server reuse host IP address, default true" default:"true"`
+
 	SCapabilityOptions
 	common_options.CommonOptions
 	common_options.DBOptions
@@ -127,3 +136,13 @@ type SCapabilityOptions struct {
 var (
 	Options ComputeOptions
 )
+
+func OnOptionsChange(oldO, newO interface{}) bool {
+	oldOpts := oldO.(*ComputeOptions)
+	newOpts := newO.(*ComputeOptions)
+
+	if common_options.OnCommonOptionsChange(&oldOpts.CommonOptions, &newOpts.CommonOptions) {
+		return true
+	}
+	return false
+}

@@ -74,7 +74,7 @@ func init() {
 type SUser struct {
 	SEnabledIdentityBaseResource
 
-	Email  string `width:"64" charset:"ascii" nullable:"true" index:"true" list:"domain" update:"domain" create:"domain_optional"`
+	Email  string `width:"64" charset:"utf8" nullable:"true" index:"true" list:"domain" update:"domain" create:"domain_optional"`
 	Mobile string `width:"20" charset:"ascii" nullable:"true" index:"true" list:"domain" update:"domain" create:"domain_optional"`
 
 	Displayname string `with:"128" charset:"utf8" nullable:"true" list:"domain" update:"domain" create:"domain_optional"`
@@ -396,7 +396,17 @@ func (manager *SUserManager) ValidateCreateData(ctx context.Context, userCred mc
 			return nil, errors.Wrap(err, "validatePasswordComplexity")
 		}
 	}
-	return manager.SEnabledIdentityBaseResourceManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+	input := api.EnabledIdentityBaseResourceCreateInput{}
+	err := data.Unmarshal(&input)
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("unmarshal EnabledIdentityBaseResourceCreateInput fail %s", err)
+	}
+	input, err = manager.SEnabledIdentityBaseResourceManager.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+	data.Update(jsonutils.Marshal(input))
+	return data, nil
 }
 
 func (user *SUser) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
@@ -636,12 +646,13 @@ func (manager *SUserManager) traceLoginEvent(ctx context.Context, token mcclient
 		usr.LastLoginSource = authCtx.Source
 		return nil
 	})
-	// ignore operator auth source
-	if authCtx.Source == mcclient.AuthSourceOperator {
+	db.OpsLog.LogEvent(usr, "auth", &s, token)
+	// to reduce auth event, log web console login only
+	if authCtx.Source == mcclient.AuthSourceWeb {
+		logclient.AddActionLogWithContext(ctx, usr, logclient.ACT_AUTHENTICATE, &s, token, true)
 		return
 	}
-	db.OpsLog.LogEvent(usr, "auth", &s, token)
-	logclient.AddActionLogWithContext(ctx, usr, logclient.ACT_AUTHENTICATE, &s, token, true)
+	// ignore any other auth source
 }
 
 type sLoginSession struct {

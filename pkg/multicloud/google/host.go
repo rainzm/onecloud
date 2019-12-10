@@ -36,7 +36,7 @@ func (self *SHost) GetMetadata() *jsonutils.JSONDict {
 }
 
 func (host *SHost) GetId() string {
-	return getGlobalId(host.zone.GetId())
+	return host.zone.GetId()
 }
 
 func (host *SHost) GetGlobalId() string {
@@ -56,7 +56,7 @@ func (host *SHost) GetIStorageById(id string) (cloudprovider.ICloudStorage, erro
 }
 
 func (host *SHost) IsEmulated() bool {
-	return false
+	return true
 }
 
 func (host *SHost) GetStatus() string {

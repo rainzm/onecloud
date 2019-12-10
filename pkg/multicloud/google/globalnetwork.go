@@ -15,17 +15,17 @@
 package google
 
 import (
-	"yunion.io/x/jsonutils"
+	"time"
 
-	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/pkg/errors"
 )
 
 type SGlobalNetwork struct {
-	Id string
-	//CreationTimestamp     time.Time
-	Name                  string
+	SResourceBase
+
+	Id                    string
+	CreationTimestamp     time.Time
 	Description           string
-	SelfLink              string
 	AutoCreateSubnetworks bool
 	Subnetworks           []string
 	RoutingConfig         map[string]string
@@ -34,40 +34,29 @@ type SGlobalNetwork struct {
 
 func (cli *SGoogleClient) GetGlobalNetwork(id string) (*SGlobalNetwork, error) {
 	net := &SGlobalNetwork{}
-	return net, cli.get(id, net)
+	return net, cli.ecsGet(id, net)
 }
 
 func (cli *SGoogleClient) GetGlobalNetworks(maxResults int, pageToken string) ([]SGlobalNetwork, error) {
 	networks := []SGlobalNetwork{}
 	params := map[string]string{}
 	resource := "global/networks"
-	return networks, cli.list(resource, params, maxResults, pageToken, &networks)
-}
-
-func (net *SGlobalNetwork) GetId() string {
-	return net.SelfLink
-}
-
-func (net *SGlobalNetwork) GetGlobalId() string {
-	return getGlobalId(net.SelfLink)
-}
-
-func (net *SGlobalNetwork) GetName() string {
-	return net.Name
-}
-
-func (net *SGlobalNetwork) GetMetadata() *jsonutils.JSONDict {
-	return nil
-}
-
-func (net *SGlobalNetwork) GetStatus() string {
-	return api.GLOBAL_NETWORK_STATUS_AVAILABLE
-}
-
-func (net *SGlobalNetwork) IsEmulated() bool {
-	return false
-}
-
-func (net *SGlobalNetwork) Refresh() error {
-	return nil
+	if maxResults == 0 && len(pageToken) == 0 {
+		err := cli.ecsListAll(resource, params, &networks)
+		if err != nil {
+			return nil, errors.Wrap(err, "ecsListAll")
+		}
+		return networks, nil
+	}
+	resp, err := cli.ecsList(resource, params)
+	if err != nil {
+		return nil, errors.Wrap(err, "ecsList")
+	}
+	if resp.Contains("items") {
+		err = resp.Unmarshal(&networks, "items")
+		if err != nil {
+			return nil, errors.Wrap(err, "resp.Unmarshal")
+		}
+	}
+	return networks, nil
 }

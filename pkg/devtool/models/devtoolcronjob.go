@@ -43,11 +43,11 @@ type SCronjob struct {
 	AnsiblePlaybookID string `width:"36" nullable:"false" create:"required" index:"true" list:"user" update:"user"`
 	TemplateID        string `width:"36" nullable:"true" create:"optional" index:"true" list:"user" update:"user"`
 	ServerID          string `width:"36" nullable:"true" create:"optional" index:"true" list:"user" update:"user"`
-	db.SStandaloneResourceBase
+	db.SVirtualResourceBase
 }
 
 type SCronjobManager struct {
-	db.SStandaloneResourceBaseManager
+	db.SVirtualResourceBaseManager
 }
 
 var (
@@ -57,7 +57,7 @@ var (
 
 func init() {
 	CronjobManager = &SCronjobManager{
-		SStandaloneResourceBaseManager: db.NewStandaloneResourceBaseManager(
+		SVirtualResourceBaseManager: db.NewVirtualResourceBaseManager(
 			SCronjob{},
 			"devtool_cronjobs_tbl",
 			"devtool_cronjob",
@@ -65,9 +65,6 @@ func init() {
 		),
 	}
 	CronjobManager.SetVirtualObject(CronjobManager)
-	db.RegisterModelManager(CronjobManager)
-	DevToolCronManager = cronman.InitCronJobManager(true, 8)
-	DevToolCronManager.Start()
 }
 
 func RunAnsibleCronjob(id string, s *mcclient.ClientSession) cronman.TCronJobFunction {
@@ -114,7 +111,8 @@ func AddOneCronjob(item *SCronjob, s *mcclient.ClientSession) error {
 }
 
 func InitializeCronjobs() error {
-
+	DevToolCronManager = cronman.InitCronJobManager(true, 8)
+	DevToolCronManager.Start()
 	Session := auth.GetAdminSession(nil, "", "")
 
 	go func() {

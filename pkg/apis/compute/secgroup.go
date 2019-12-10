@@ -26,7 +26,7 @@ import (
 )
 
 type SSecgroupRuleCreateInput struct {
-	apis.Meta
+	apis.ResourceBaseCreateInput
 
 	Priority    int
 	Protocol    string
@@ -37,6 +37,7 @@ type SSecgroupRuleCreateInput struct {
 	CIDR        string
 	Action      string
 	Description string
+	Secgroup    string
 	SecgroupId  string
 }
 
@@ -70,12 +71,9 @@ func (input *SSecgroupRuleCreateInput) Check() error {
 }
 
 type SSecgroupCreateInput struct {
-	apis.Meta
+	apis.SharableVirtualResourceCreateInput
 
-	Name        string
-	Status      string
-	Description string
-	Rules       []SSecgroupRuleCreateInput
+	Rules []SSecgroupRuleCreateInput `json:"rules"`
 }
 
 type SSecgroupListFilterInput struct {

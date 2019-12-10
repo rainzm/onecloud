@@ -82,6 +82,9 @@ func (region *SRegion) GetFirewalls(network string, maxResults int, pageToken st
 	firewalls := []SFirewall{}
 	params := map[string]string{"filter": "disabled = false"}
 	resource := "global/firewalls"
+	if len(network) > 0 {
+		params["filter"] = fmt.Sprintf(`(disabled = false) AND (network="%s")`, network)
+	}
 	return firewalls, region.List(resource, params, maxResults, pageToken, &firewalls)
 }
 
@@ -190,7 +193,7 @@ func (secgroup *SSecurityGroup) GetName() string {
 	if len(secgroup.ServiceAccount) > 0 {
 		return secgroup.ServiceAccount
 	}
-	return secgroup.vpc.globalnetwork.GetName()
+	return secgroup.vpc.globalnetwork.Name
 }
 
 func (secgroup *SSecurityGroup) GetMetadata() *jsonutils.JSONDict {

@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/sqlchemy"
 
+	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
@@ -576,6 +577,17 @@ func (manager *SZoneManager) ListItemFilter(ctx context.Context, q *sqlchemy.SQu
 		iconditions := NetworkUsableZoneQueries(q.Field("id"), usableNet, usableVpc)
 		q = q.Filter(sqlchemy.OR(iconditions...))
 		q = q.Equals("status", api.ZONE_ENABLE)
+
+		service, _ := query.GetString("service")
+		switch service {
+		case ElasticcacheManager.KeywordPlural():
+			q2 := ElasticcacheSkuManager.Query("zone_id").Distinct()
+			statusFilter := sqlchemy.OR(sqlchemy.Equals(q2.Field("prepaid_status"), api.SkuStatusAvailable), sqlchemy.Equals(q2.Field("postpaid_status"), api.SkuStatusAvailable))
+			skusSQ := q2.Filter(statusFilter).SubQuery()
+			q = q.In("id", skusSQ)
+		default:
+			break
+		}
 	}
 
 	managerStr, _ := query.GetString("manager")
@@ -675,5 +687,16 @@ func (manager *SZoneManager) ValidateCreateData(ctx context.Context, userCred mc
 	}
 	data.Add(jsonutils.NewString(regionId), "cloudregion_id")
 	data.Set("status", jsonutils.NewString(api.ZONE_ENABLE))
-	return manager.SStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
+
+	input := apis.StatusStandaloneResourceCreateInput{}
+	err := data.Unmarshal(&input)
+	if err != nil {
+		return nil, httperrors.NewInternalServerError("unmarshal StatusStandaloneResourceCreateInput fail %s", err)
+	}
+	input, err = manager.SStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, input)
+	if err != nil {
+		return nil, err
+	}
+	data.Update(jsonutils.Marshal(input))
+	return data, nil
 }

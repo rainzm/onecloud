@@ -60,7 +60,8 @@ type SCloudregion struct {
 
 	cloudprovider.SGeographicInfo
 
-	Provider string `width:"64" charset:"ascii" list:"user" nullable:"false" default:"OneCloud"`
+	Environment string `width:"32" charset:"ascii" list:"user"`
+	Provider    string `width:"64" charset:"ascii" list:"user" nullable:"false" default:"OneCloud"`
 }
 
 func (manager *SCloudregionManager) AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
@@ -402,6 +403,7 @@ func (self *SCloudregion) syncWithCloudRegion(ctx context.Context, userCred mccl
 		self.Status = cloudRegion.GetStatus()
 		self.SGeographicInfo = cloudRegion.GetGeographicInfo()
 		self.Provider = cloudRegion.GetProvider()
+		self.Environment = cloudRegion.GetCloudEnv()
 
 		self.IsEmulated = cloudRegion.IsEmulated()
 
@@ -433,6 +435,7 @@ func (manager *SCloudregionManager) newFromCloudRegion(ctx context.Context, user
 	region.Status = cloudRegion.GetStatus()
 	region.Enabled = true
 	region.Provider = cloudRegion.GetProvider()
+	region.Environment = cloudRegion.GetCloudEnv()
 
 	region.IsEmulated = cloudRegion.IsEmulated()
 
@@ -704,9 +707,9 @@ func (manager *SCloudregionManager) ListItemFilter(ctx context.Context, q *sqlch
 	return q, nil
 }
 
-func (manager *SCloudregionManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+/*func (manager *SCloudregionManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
 	return manager.SEnabledStatusStandaloneResourceBaseManager.ValidateCreateData(ctx, userCred, ownerId, query, data)
-}
+}*/
 
 func (self *SCloudregion) isManaged() bool {
 	if len(self.ExternalId) > 0 {

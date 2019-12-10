@@ -26,13 +26,12 @@ import (
 
 type SStorage struct {
 	zone *SZone
+	SResourceBase
 
 	CreationTimestamp time.Time
-	Name              string
 	Description       string
 	ValidDiskSize     string
 	Zone              string
-	SelfLink          string
 	DefaultDiskSizeGb string
 	Kind              string
 }
@@ -50,14 +49,6 @@ func (region *SRegion) GetStorages(zone string, maxResults int, pageToken string
 func (region *SRegion) GetStorage(id string) (*SStorage, error) {
 	storage := &SStorage{}
 	return storage, region.Get(id, storage)
-}
-
-func (storage *SStorage) GetId() string {
-	return getGlobalId(storage.SelfLink)
-}
-
-func (storage *SStorage) GetGlobalId() string {
-	return storage.GetId()
 }
 
 func (storage *SStorage) GetName() string {
@@ -141,5 +132,5 @@ func (storage *SStorage) GetMountPoint() string {
 }
 
 func (storage *SStorage) IsSysDiskStore() bool {
-	return storage.Name != api.STORAGE_GOOGLE_LOCAL_STORAGE
+	return storage.Name != api.STORAGE_GOOGLE_LOCAL_SSD
 }

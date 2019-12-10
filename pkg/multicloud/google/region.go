@@ -119,15 +119,10 @@ func (region *SRegion) GetIVpcs() ([]cloudprovider.ICloudVpc, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "fetchGlobalNetwork")
 	}
-	substr := fmt.Sprintf("regions/%s/subnetworks", region.Name)
 	ivpcs := []cloudprovider.ICloudVpc{}
 	for i := range globalnetworks {
-		for _, subnet := range globalnetworks[i].Subnetworks {
-			if strings.Index(subnet, substr) >= 0 {
-				vpc := SVpc{region: region, globalnetwork: &globalnetworks[i]}
-				ivpcs = append(ivpcs, &vpc)
-			}
-		}
+		vpc := SVpc{region: region, globalnetwork: &globalnetworks[i]}
+		ivpcs = append(ivpcs, &vpc)
 	}
 	return ivpcs, nil
 }
@@ -143,10 +138,6 @@ func (region *SRegion) GetIVpcById(id string) (cloudprovider.ICloudVpc, error) {
 		}
 	}
 	return nil, cloudprovider.ErrNotFound
-}
-
-func (region *SRegion) GetUrlPrefixWithProjectId() string {
-	return getUrlPrefix() + region.GetProjectId()
 }
 
 func (region *SRegion) GetProjectId() string {
@@ -250,15 +241,33 @@ func (region *SRegion) GetISnapshotById(id string) (cloudprovider.ICloudSnapshot
 }
 
 func (region *SRegion) ListAll(resource string, params map[string]string, retval interface{}) error {
-	return region.client.listAll(resource, params, retval)
+	return region.client.ecsListAll(resource, params, retval)
 }
 
 func (region *SRegion) List(resource string, params map[string]string, maxResults int, pageToken string, retval interface{}) error {
-	return region.client.list(resource, params, maxResults, pageToken, retval)
+	if maxResults == 0 && len(pageToken) == 0 {
+		return region.ListAll(resource, params, retval)
+	}
+	if params == nil {
+		params = map[string]string{}
+	}
+	params["maxResults"] = fmt.Sprintf("%d", maxResults)
+	params["pageToken"] = pageToken
+	resp, err := region.client.ecsList(resource, params)
+	if err != nil {
+		return errors.Wrap(err, "ecsList")
+	}
+	if resp.Contains("items") && retval != nil {
+		err = resp.Unmarshal(retval, "items")
+		if err != nil {
+			return errors.Wrap(err, "resp.Unmarshal")
+		}
+	}
+	return nil
 }
 
 func (region *SRegion) Get(id string, retval interface{}) error {
-	return region.client.get(id, retval)
+	return region.client.ecsGet(id, retval)
 }
 
 func (region *SRegion) fetchResourcePolicies() ([]SResourcePolicy, error) {

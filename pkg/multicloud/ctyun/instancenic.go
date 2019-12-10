@@ -24,7 +24,6 @@ import (
 
 type SInstanceNic struct {
 	instance  *SInstance
-	ipAddr    string
 	FixedIPS  []FixedIP `json:"fixed_ips"`
 	PortState string    `json:"port_state"`
 	PortID    string    `json:"port_id"`
@@ -38,16 +37,25 @@ type FixedIP struct {
 }
 
 func (self *SInstanceNic) GetIP() string {
-	return self.ipAddr
+	if len(self.FixedIPS) == 0 {
+		return ""
+	}
+
+	return self.FixedIPS[0].IPAddress
 }
 
 func (self *SInstanceNic) GetMAC() string {
-	ip, _ := netutils.NewIPV4Addr(self.ipAddr)
+	ipAddr := self.GetIP()
+	ip, _ := netutils.NewIPV4Addr(ipAddr)
 	return ip.ToMac("00:16:")
 }
 
 func (self *SInstanceNic) GetDriver() string {
 	return "virtio"
+}
+
+func (self *SInstanceNic) InClassicNetwork() bool {
+	return false
 }
 
 func (self *SInstanceNic) GetINetwork() cloudprovider.ICloudNetwork {

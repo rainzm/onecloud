@@ -26,6 +26,7 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
+	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/pkg/util/regutils"
 	"yunion.io/x/sqlchemy"
@@ -150,9 +151,13 @@ func (manager *SGuestnetworkManager) GenerateMac(netId string, suggestion string
 }
 
 func (manager *SGuestnetworkManager) newGuestNetwork(ctx context.Context, userCred mcclient.TokenCredential, guest *SGuest, network *SNetwork,
-	index int8, address string, mac string, driver string, bwLimit int, virtual bool, reserved bool,
-	allocDir api.IPAllocationDirection, requiredDesignatedIp bool, ifName string, teamWithMac string) (*SGuestnetwork, error) {
-
+	index int8, address string, mac string, driver string, bwLimit int,
+	virtual bool, reserved bool,
+	allocDir api.IPAllocationDirection,
+	requiredDesignatedIp bool,
+	reUseAddr bool,
+	ifname string, teamWithMac string,
+) (*SGuestnetwork, error) {
 	gn := SGuestnetwork{}
 	gn.SetModelManager(GuestnetworkManager, &gn)
 
@@ -181,28 +186,35 @@ func (manager *SGuestnetworkManager) newGuestNetwork(ctx context.Context, userCr
 	}
 	gn.MacAddr = macAddr
 	if !virtual {
-		addrTable := network.GetUsedAddresses()
-		recentAddrTable := manager.getRecentlyReleasedIPAddresses(network.Id, network.getAllocTimoutDuration())
-		ipAddr, err := network.GetFreeIP(ctx, userCred, addrTable, recentAddrTable, address, allocDir, reserved)
-		if err != nil {
-			return nil, err
+		if len(address) > 0 && reUseAddr {
+			ipAddr, err := netutils.NewIPV4Addr(address)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Reuse invalid address %s", address)
+			}
+			if !network.IsAddressInRange(ipAddr) {
+				return nil, errors.Wrapf(httperrors.ErrOutOfRange, "%s not in network address range", address)
+			}
+			// if reuse Ip address, no need to check address availability
+			// assign it anyway
+			gn.IpAddr = address
+		} else {
+			addrTable := network.GetUsedAddresses()
+			recentAddrTable := manager.getRecentlyReleasedIPAddresses(network.Id, network.getAllocTimoutDuration())
+			ipAddr, err := network.GetFreeIP(ctx, userCred, addrTable, recentAddrTable, address, allocDir, reserved)
+			if err != nil {
+				return nil, err
+			}
+			if len(address) > 0 && ipAddr != address && requiredDesignatedIp {
+				return nil, fmt.Errorf("candidate ip %s is occupied!", address)
+			}
+			gn.IpAddr = ipAddr
 		}
-		if len(address) > 0 && ipAddr != address && requiredDesignatedIp {
-			return nil, fmt.Errorf("candidate ip %s is occupied!", address)
-		}
-		gn.IpAddr = ipAddr
 	}
-	ifTable := network.GetUsedIfnames()
-	if len(ifName) > 0 {
-		if _, ok := ifTable[ifName]; ok {
-			ifName = ""
-			log.Infof("ifname %s has been used, to release ...", ifName)
-		}
+	ifname, err = gn.checkOrAllocateIfname(network, ifname)
+	if err != nil {
+		return nil, err
 	}
-	if len(ifName) == 0 {
-		ifName = gn.GetFreeIfname(network, ifTable)
-	}
-	gn.Ifname = ifName
+	gn.Ifname = ifname
 	gn.TeamWith = teamWithMac
 	err = manager.TableSpec().Insert(&gn)
 	if err != nil {
@@ -238,21 +250,41 @@ func (self *SGuestnetwork) generateIfname(network *SNetwork, virtual bool, rando
 	}
 }
 
-func (self *SGuestnetwork) GetFreeIfname(network *SNetwork, ifTable map[string]bool) string {
-	ifname := self.generateIfname(network, self.Virtual, false)
-	if _, exist := ifTable[ifname]; exist {
-		if !self.Virtual {
-			ifname = self.generateIfname(network, true, false)
-		}
-		for {
-			if _, exist = ifTable[ifname]; exist {
-				ifname = self.generateIfname(network, true, true)
-			} else {
-				break
-			}
-		}
+func (man *SGuestnetworkManager) ifnameUsed(ifname string) bool {
+	if ifname == "" {
+		return true
 	}
-	return ifname
+	count, err := GuestnetworkManager.Query().Equals("ifname", ifname).CountWithError()
+	if err != nil {
+		panic(errors.Wrap(err, "query if ifname is used"))
+	}
+	return count > 0
+}
+
+func (self *SGuestnetwork) checkOrAllocateIfname(network *SNetwork, preferIfname string) (string, error) {
+	man := GuestnetworkManager
+	if !man.ifnameUsed(preferIfname) {
+		return preferIfname, nil
+	}
+	ifname := self.generateIfname(network, self.Virtual, false)
+	if !man.ifnameUsed(ifname) {
+		return ifname, nil
+	}
+	if !self.Virtual {
+		ifname = self.generateIfname(network, true, false)
+	}
+	found := false
+	for i := 0; i < 5; i++ {
+		if !man.ifnameUsed(ifname) {
+			found = true
+			break
+		}
+		ifname = self.generateIfname(network, true, true)
+	}
+	if !found {
+		return "", httperrors.NewConflictError("cannot allocate ifname")
+	}
+	return ifname, nil
 }
 
 func (self *SGuestnetwork) GetGuest() *SGuest {
@@ -472,26 +504,24 @@ func (self *SGuestnetwork) Detach(ctx context.Context, userCred mcclient.TokenCr
 	return db.DetachJoint(ctx, userCred, self)
 }
 
-func totalGuestNicCount(scope rbacutils.TRbacScope, ownerId mcclient.IIdentityProvider, rangeObj db.IStandaloneModel, includeSystem bool) GuestnicsCount {
+func totalGuestNicCount(
+	scope rbacutils.TRbacScope,
+	ownerId mcclient.IIdentityProvider,
+	rangeObjs []db.IStandaloneModel,
+	includeSystem bool,
+	providers []string,
+	brands []string,
+	cloudEnv string,
+) GuestnicsCount {
 	guests := GuestManager.Query().SubQuery()
+	hosts := HostManager.Query().SubQuery()
 	guestnics := GuestnetworkManager.Query().SubQuery()
-	q := guestnics.Query().Join(guests, sqlchemy.Equals(guests.Field("id"), guestnics.Field("guest_id")))
-	if rangeObj != nil {
-		if rangeObj.Keyword() == "zone" {
-			hosts := HostManager.Query().SubQuery()
-			q = q.Join(hosts, sqlchemy.Equals(guests.Field("host_id"), hosts.Field("id"))).Filter(sqlchemy.Equals(hosts.Field("zone_id"), rangeObj.GetId()))
-		} else if rangeObj.Keyword() == "wire" {
-			hosts := HostManager.Query().SubQuery()
-			hostwires := HostwireManager.Query().SubQuery()
-			q = q.Join(hosts, sqlchemy.Equals(guests.Field("host_id"), hosts.Field("id"))).Join(hostwires, sqlchemy.Equals(hosts.Field("id"), hostwires.Field("host_id"))).Filter(sqlchemy.Equals(hostwires.Field("wire_id"), rangeObj.GetId()))
-		} else if rangeObj.Keyword() == "host" {
+	q := guestnics.Query()
+	q = q.Join(guests, sqlchemy.Equals(guests.Field("id"), guestnics.Field("guest_id")))
+	q = q.Join(hosts, sqlchemy.Equals(guests.Field("host_id"), hosts.Field("id")))
 
-		} else if rangeObj.Keyword() == "vcenter" {
-
-		} else if rangeObj.Keyword() == "schedtag" {
-
-		}
-	}
+	q = CloudProviderFilter(q, hosts.Field("manager_id"), providers, brands, cloudEnv)
+	q = rangeObjectsFilter(q, rangeObjs, nil, hosts.Field("zone_id"), hosts.Field("manager_id"))
 
 	switch scope {
 	case rbacutils.ScopeSystem:

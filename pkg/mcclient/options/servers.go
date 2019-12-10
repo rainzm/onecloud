@@ -154,7 +154,6 @@ func (o ServerConfigs) Data() (*computeapi.ServerConfigs, error) {
 		PreferBackupHost: o.BackupHost,
 		Hypervisor:       o.Hypervisor,
 		ResourceType:     o.ResourceType,
-		Project:          o.Project,
 		Backup:           o.Backup,
 		Count:            o.Count,
 	}
@@ -360,10 +359,8 @@ func (opts *ServerCreateOptionalOptions) OptionalParams() (*computeapi.ServerCre
 		Vga:                opts.Vga,
 		Vdi:                opts.Vdi,
 		Bios:               opts.Bios,
-		Description:        opts.Desc,
 		ShutdownBehavior:   opts.ShutdownBehavior,
 		AutoStart:          opts.AutoStart,
-		IsSystem:           opts.System,
 		Duration:           opts.Duration,
 		AutoPrepaidRecycle: opts.AutoPrepaidRecycle,
 		EipBw:              opts.EipBw,
@@ -533,6 +530,12 @@ type ServerSecGroupOptions struct {
 type ServerSecGroupsOptions struct {
 	ID     string   `help:"ID or Name of server" metavar:"Guest" json:"-"`
 	Secgrp []string `help:"Ids of Security Groups" metavar:"Security Groups" positional:"true"`
+}
+
+type ServerModifySrcCheckOptions struct {
+	ID          string `help:"ID or Name of server" metavar:"Guest" json:"-"`
+	SrcIpCheck  string `help:"Turn on/off src ip check" choices:"on|off"`
+	SrcMacCheck string `help:"Turn on/off src mac check" choices:"on|off"`
 }
 
 type ServerSendKeyOptions struct {
