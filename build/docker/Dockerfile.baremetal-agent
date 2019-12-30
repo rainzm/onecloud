@@ -1,0 +1,9 @@
+FROM registry.cn-beijing.aliyuncs.com/yunionio/baremetal-base:latest
+
+MAINTAINER "Zexi Li <lizexi@yunionyun.com>"
+
+RUN mkdir -p /opt/yunion/bin
+
+ADD ./_output/bin/baremetal-agent /opt/yunion/bin/baremetal-agent
+ADD ./_output/bin/.baremetal-agent.bin /opt/yunion/bin/.baremetal-agent.bin
+ADD ./_output/bin/bundles/baremetal-agent /opt/yunion/bin/bundles/baremetal-agent

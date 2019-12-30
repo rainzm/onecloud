@@ -1,0 +1,6 @@
+FROM registry.cn-beijing.aliyuncs.com/yunionio/glance-base:latest
+
+MAINTAINER "Zexi Li <lizexi@yunionyun.com>"
+
+RUN mkdir -p /opt/yunion/bin
+ADD ./_output/bin/glance /opt/yunion/bin/glance

@@ -1,0 +1,3 @@
+FROM registry.cn-beijing.aliyuncs.com/yunionio/onecloud-base:latest
+
+ADD ./_output/bin/cloudnet /opt/yunion/bin/cloudnet

@@ -1,0 +1,4 @@
+FROM registry.cn-beijing.aliyuncs.com/yunionio/onecloud-base:latest
+
+COPY ./build/notify/root/opt/ /opt/
+ADD ./_output/bin/notify /opt/yunion/bin/notify
