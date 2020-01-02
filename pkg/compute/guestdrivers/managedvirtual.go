@@ -1048,6 +1048,8 @@ func GetCloudVMStatus(vm cloudprovider.ICloudVM) string {
 		status = cloudprovider.CloudVMStatusStopped
 	case api.VM_STARTING:
 		status = cloudprovider.CloudVMStatusStopped
+	case api.VM_SUSPEND:
+		status = cloudprovider.CloudVMStatusSuspend
 	case api.VM_STOPPING:
 		status = cloudprovider.CloudVMStatusStopping
 	case api.VM_CHANGE_FLAVOR:
