@@ -24,7 +24,7 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/version"
 
-	_interface "yunion.io/x/onecloud/pkg/cloudcommon/agent/interface"
+	"yunion.io/x/onecloud/pkg/cloudcommon/agent/iagent"
 	"yunion.io/x/onecloud/pkg/cloudcommon/object"
 	"yunion.io/x/onecloud/pkg/hostman/storageman"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -68,11 +68,11 @@ func getIfaceIPs(iface *net.Interface) ([]net.IP, error) {
 	return ips, nil
 }
 
-func (agent *SBaseAgent) IAgent() _interface.IAgent {
-	return agent.GetVirtualObject().(_interface.IAgent)
+func (agent *SBaseAgent) IAgent() iagent.IAgent {
+	return agent.GetVirtualObject().(iagent.IAgent)
 }
 
-func (agent *SBaseAgent) Init(iagent _interface.IAgent, ifname string, cachePath string) error {
+func (agent *SBaseAgent) Init(iagent iagent.IAgent, ifname string, cachePath string) error {
 	iface, err := net.InterfaceByName(ifname)
 	if err != nil {
 		return err

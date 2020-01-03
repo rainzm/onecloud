@@ -42,8 +42,6 @@ func InitHandlers(app *appsrv.Application) {
 }
 
 var defaultHandler = func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	// nothing
-	// todo
 	httperrors.NotImplementedError(w, "")
 	return
 }
@@ -76,7 +74,7 @@ func uploadHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 	_, _, body := appsrv.FetchEnv(ctx, w, r)
 	disk, err := body.Get("disk")
 	if err != nil {
-		httperrors.InputParameterError(w, "miss disk")
+		httperrors.MissingParameterError(w, "miss disk")
 		return
 	}
 	DelayTask(ctx, esxi.EsxiAgent.AgentStorage.SaveToGlance, disk)
@@ -88,7 +86,7 @@ func deployHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 	_, _, body := appsrv.FetchEnv(ctx, w, r)
 	disk, err := body.Get("disk")
 	if err != nil {
-		httperrors.InputParameterError(w, "miss disk")
+		httperrors.MissingParameterError(w, "miss disk")
 		return
 	}
 	DelayTask(ctx, esxi.EsxiAgent.AgentStorage.AgentDeployGuest, disk)
@@ -178,7 +176,7 @@ func diskAndDiskInfo(ctx context.Context, w http.ResponseWriter, r *http.Request
 	}
 	diskInfo, err := body.Get("disk")
 	if err != nil {
-		return nil, nil, httperrors.NewInputParameterError("miss disk")
+		return nil, nil, httperrors.NewMissingParameterError("miss disk")
 	}
 	return disk, diskInfo, nil
 }

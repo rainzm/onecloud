@@ -338,7 +338,6 @@ Loop:
 	} else if !isEnd {
 		// timeout
 		vd.Proc.Kill()
-		time.Sleep(time.Second)
 		return errors.Error(fmt.Sprintf("VDDKDisk read timeout, program blocked"))
 	}
 	return nil
