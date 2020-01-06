@@ -295,6 +295,7 @@ func TestIdleTimeout(t *testing.T) {
 	}
 }
 
+/*
 func TestDialTimeout(t *testing.T) {
 	cli := GetAdaptiveTimeoutClient()
 	resp, err := cli.Get(fmt.Sprintf("http://192.0.0.1:48481"))
@@ -307,3 +308,4 @@ func TestDialTimeout(t *testing.T) {
 	}
 	CloseResponse(resp)
 }
+*/
