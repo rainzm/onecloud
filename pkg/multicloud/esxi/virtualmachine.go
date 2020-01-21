@@ -854,7 +854,9 @@ func (self *SVirtualMachine) CreateDisk(ctx context.Context, sizeMb int, uuid st
 		return err
 	}
 	if len(devs) == 0 {
-		return fmt.Errorf("Driver %s not found", driver)
+		if driver != "scsi" {
+			return fmt.Errorf("Driver %s not found", driver)
+		}
 	}
 	ctlKey := minDevKey(devs)
 	sameDisks := self.FindDiskByDriver(driver)
@@ -869,6 +871,14 @@ func (self *SVirtualMachine) CreateDisk(ctx context.Context, sizeMb int, uuid st
 	}
 
 	return self.createDiskInternal(ctx, sizeMb, uuid, int32(index), diskKey, ctlKey, "", true)
+}
+
+func (self *SVirtualMachine) CreateSCSIAndDisk() (int32, error) {
+	deviceChange := make([]types.BaseVirtualDeviceConfigSpec, 0, 1)
+	key := self.FindMinDiffKey(1000)
+	deviceChange = append(deviceChange, addDevSpec(NewSCSIDev(key, 100, "scsi")))
+	configSpec :=
+	return 0, nil
 }
 
 func (self *SVirtualMachine) createDiskInternal(ctx context.Context, sizeMb int, uuid string, index int32,
