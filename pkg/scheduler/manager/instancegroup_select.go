@@ -55,6 +55,19 @@ type sSchedResultItem struct {
 	backupCount           int64
 }
 
+func (item *sSchedResultItem) minInstanceGroupCapacity(groupSet map[string]*models.SGroup) int64 {
+	var mincapa int64 = -1
+	for id, capa := range item.instanceGroupCapacity {
+		if _, ok := groupSet[id]; !ok {
+			continue
+		}
+		if mincapa == -1 || capa < mincapa {
+			mincapa = capa
+		}
+	}
+	return mincapa
+}
+
 func buildHosts(result *core.SchedResultItemList, groups map[string]*models.SGroup) []*sSchedResultItem {
 	hosts := make([]*sSchedResultItem, result.Data.Len())
 	for i := 0; i < len(result.Data); i++ {
@@ -78,27 +91,32 @@ func buildHosts(result *core.SchedResultItemList, groups map[string]*models.SGro
 			instanceGroupCapacity: igCapacity,
 		}
 	}
-	sortHosts(hosts, nil)
 	return hosts
 }
 
 // sortHost sorts the host for guest that is the backup one of the high-availability guest
 // if isBackup is true and the master one if isBackup is false.
-func sortHosts(hosts []*sSchedResultItem, isBackup *bool) {
+func sortHosts(hosts []*sSchedResultItem, guestInfo *sGuestInfo, isBackup *bool) {
+	sortIndexi, sortIndexj := make([]int64, 4), make([]int64, 4)
 	sort.Slice(hosts, func(i, j int) bool {
-		var counti, countj int64
 		switch {
 		case isBackup == nil:
-			counti, countj = hosts[i].Count, hosts[j].Count
+			sortIndexi[0], sortIndexj[0] = hosts[i].Count, hosts[j].Count
 		case *isBackup:
-			counti, countj = hosts[i].backupCount, hosts[j].backupCount
+			sortIndexi[0], sortIndexj[0] = hosts[i].backupCount, hosts[j].backupCount
 		default:
-			counti, countj = hosts[i].masterCount, hosts[j].masterCount
+			sortIndexi[0], sortIndexj[0] = hosts[i].masterCount, hosts[j].masterCount
 		}
-		if counti == countj {
-			return hosts[i].Capacity > hosts[j].Capacity
+		sortIndexi[1], sortIndexj[1] = hosts[i].Count, hosts[j].Count
+		sortIndexi[2], sortIndexj[2] = -(hosts[i].minInstanceGroupCapacity(guestInfo.instanceGroupsDetail)), -(hosts[j].minInstanceGroupCapacity(guestInfo.instanceGroupsDetail))
+		sortIndexi[3], sortIndexj[3] = -(hosts[i].Capacity), -(hosts[j].Capacity)
+		for i := 0; i < 4; i++ {
+			if sortIndexi[i] == sortIndexj[i] {
+				continue
+			}
+			return sortIndexi[i] < sortIndexj[i]
 		}
-		return counti < countj
+		return true
 	})
 }
 
@@ -288,7 +306,7 @@ func unMarkHostUsed(host *sSchedResultItem, guestInfo sGuestInfo, isBackup *bool
 // If forced is true, all instanceGroups will be forced.
 // Otherwise, the instanceGroups with ForceDispersion 'false' will be unforced.
 func selectHost(hosts []*sSchedResultItem, guestInfo sGuestInfo, isBackup *bool, forced bool) *sSchedResultItem {
-	sortHosts(hosts, isBackup)
+	sortHosts(hosts, &guestInfo, isBackup)
 	var idx = -1
 	if len(guestInfo.preferHost) > 0 {
 		if idx = hostsIndex(guestInfo.preferHost, hosts); idx < 0 {
