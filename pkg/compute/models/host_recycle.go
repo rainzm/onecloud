@@ -73,7 +73,7 @@ func (self *SGuest) PerformPrepaidRecycle(ctx context.Context, userCred mcclient
 	}
 	err := self.CanPerformPrepaidRecycle()
 	if err != nil {
-		return nil, httperrors.NewInvalidStatusError(err.Error())
+		return nil, httperrors.NewInvalidStatusError("%v", err)
 	}
 
 	return self.DoPerformPrepaidRecycle(ctx, userCred, jsonutils.QueryBoolean(data, "auto_delete", false))
@@ -174,7 +174,7 @@ func (self *SGuest) doPrepaidRecycleNoLock(ctx context.Context, userCred mcclien
 	fakeHost.IsEmulated = true
 	fakeHost.Description = "fake host for prepaid vm recycling"
 
-	err = HostManager.TableSpec().Insert(&fakeHost)
+	err = HostManager.TableSpec().Insert(ctx, &fakeHost)
 	if err != nil {
 		log.Errorf("fail to insert fake host %s", err)
 		return err
@@ -245,7 +245,7 @@ func (self *SGuest) doPrepaidRecycleNoLock(ctx context.Context, userCred mcclien
 	fakeStorage.ManagerId = sysStorage.ManagerId
 	fakeStorage.ExternalId = externalId
 
-	err = StorageManager.TableSpec().Insert(&fakeStorage)
+	err = StorageManager.TableSpec().Insert(ctx, &fakeStorage)
 	if err != nil {
 		log.Errorf("fail to insert fake storage %s", err)
 		fakeHost.RealDelete(ctx, userCred)
@@ -686,7 +686,7 @@ func (host *SHost) RebuildRecycledGuest(ctx context.Context, userCred mcclient.T
 			log.Errorf("disk.SetExternalId fail %s", err)
 			return err
 		}
-		err = disk.syncWithCloudDisk(ctx, userCred, iprovider, idisks[i], i, guest.GetOwnerId())
+		err = disk.syncWithCloudDisk(ctx, userCred, iprovider, idisks[i], i, guest.GetOwnerId(), host.ManagerId)
 		if err != nil {
 			log.Errorf("disk.syncWithCloudDisk fail %s", err)
 			return err

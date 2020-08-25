@@ -90,14 +90,6 @@ func (manager *SStoragecachedimageManager) GetSlaveFieldName() string {
 	return "cachedimage_id"
 }
 
-func (joint *SStoragecachedimage) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SStoragecachedimage) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
-}
-
 func (self *SStoragecachedimageManager) AllowListItems(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
 	return db.IsAdminAllowList(userCred, self)
 }
@@ -360,7 +352,7 @@ func (manager *SStoragecachedimageManager) Register(ctx context.Context, userCre
 	}
 	cachedimage.Status = status
 
-	err := manager.TableSpec().Insert(cachedimage)
+	err := manager.TableSpec().Insert(ctx, cachedimage)
 
 	if err != nil {
 		log.Errorf("insert error %s", err)
@@ -508,22 +500,22 @@ func (manager *SStoragecachedimageManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SExternalizedResourceBaseManager.ListItemFilter")
 	}
 
-	if len(query.Storagecache) > 0 {
-		storageCacheObj, err := StoragecacheManager.FetchByIdOrName(userCred, query.Storagecache)
+	if len(query.StoragecacheId) > 0 {
+		storageCacheObj, err := StoragecacheManager.FetchByIdOrName(userCred, query.StoragecacheId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(StoragecacheManager.Keyword(), query.Storagecache)
+				return nil, httperrors.NewResourceNotFoundError2(StoragecacheManager.Keyword(), query.StoragecacheId)
 			} else {
 				return nil, errors.Wrap(err, "StoragecacheManager.FetchByIdOrName")
 			}
 		}
 		q = q.Equals("storagecache_id", storageCacheObj.GetId())
 	}
-	if len(query.Cachedimage) > 0 {
-		cachedImageObj, err := CachedimageManager.FetchByIdOrName(userCred, query.Cachedimage)
+	if len(query.CachedimageId) > 0 {
+		cachedImageObj, err := CachedimageManager.FetchByIdOrName(userCred, query.CachedimageId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(CachedimageManager.Keyword(), query.Cachedimage)
+				return nil, httperrors.NewResourceNotFoundError2(CachedimageManager.Keyword(), query.CachedimageId)
 			} else {
 				return nil, errors.Wrap(err, "CachedimageManager.FetchByIdOrName")
 			}

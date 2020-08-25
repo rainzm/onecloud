@@ -224,7 +224,7 @@ func FetchUserInfo(ctx context.Context, data jsonutils.JSONObject) (mcclient.IId
 	userStr, key := jsonutils.GetAnyString2(data, []string{"user", "user_id"})
 	if len(userStr) > 0 {
 		data.(*jsonutils.JSONDict).Remove(key)
-		u, err := UserCacheManager.FetchUserByIdOrName(ctx, userStr)
+		u, err := DefaultUserFetcher(ctx, userStr)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return nil, httperrors.NewResourceNotFoundError2("user", userStr)
@@ -387,7 +387,8 @@ func FetchCheckQueryOwnerScope(ctx context.Context, userCred mcclient.TokenCrede
 		requireScope = queryScope
 	}
 	if doCheckRbac && requireScope.HigherThan(allowScope) {
-		return nil, scope, httperrors.NewForbiddenError(fmt.Sprintf("not enough privilege(require:%s,allow:%s,query:%s)", requireScope, allowScope, queryScope))
+		return nil, scope, httperrors.NewForbiddenError("not enough privilege (require:%s,allow:%s,query:%s)",
+			requireScope, allowScope, queryScope)
 	}
 	return ownerId, queryScope, nil
 }

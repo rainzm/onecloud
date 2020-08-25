@@ -221,6 +221,7 @@ func (asc *SASController) Scale(ctx context.Context, userCred mcclient.TokenCred
 	log.Debugf("insert sa")
 
 	scalingActivity, err := models.ScalingActivityManager.CreateScalingActivity(
+		ctx,
 		sg.Id,
 		fmt.Sprintf(`The Desire Instance Number was changed, so change the Total Instance Number from "%d" to "%d"`,
 			total, sg.DesireInstanceNumber,
@@ -585,6 +586,7 @@ func (asc *SASController) checkAllServer(session *mcclient.ClientSession, guestI
 				ret, e := modules.Servers.GetSpecific(session, id, "status", nil)
 				if e != nil {
 					log.Errorf("Servers.GetSpecific failed: %s", e)
+					<-ticker.C
 					continue
 				}
 				log.Debugf("ret from GetSpecific: %s", ret.String())

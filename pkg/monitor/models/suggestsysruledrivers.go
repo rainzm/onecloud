@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/util/sets"
 
 	"yunion.io/x/onecloud/pkg/apis/monitor"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -25,20 +26,22 @@ import (
 
 var (
 	//存储初始化的内容，同时起到默认配置的作用。
-	suggestSysRuleDrivers = make(map[string]ISuggestSysRuleDriver, 0)
+	suggestSysRuleDrivers = make(map[monitor.SuggestDriverType]ISuggestSysRuleDriver, 0)
 )
 
 type ISuggestSysRuleDriver interface {
-	GetType() string
-	GetResourceType() string
-	//validate on create
+	GetType() monitor.SuggestDriverType
+	GetResourceType() monitor.MonitorResourceType
+	GetAction() monitor.SuggestDriverAction
+	GetSuggest() monitor.MonitorSuggest
+	// validate on create
 	ValidateSetting(input *monitor.SSuggestSysAlertSetting) error
 
-	//method call for cronjob
+	// method call for cronjob
 	DoSuggestSysRule(ctx context.Context, userCred mcclient.TokenCredential, isStart bool)
-	Run(instance *monitor.SSuggestSysAlertSetting)
+	Run(rule *SSuggestSysRule, setting *monitor.SSuggestSysAlertSetting)
 
-	//resolve thing for the rule
+	// resolve thing for the rule
 	StartResolveTask(ctx context.Context, userCred mcclient.TokenCredential, suggestSysAlert *SSuggestSysAlert,
 		params *jsonutils.JSONDict) error
 	Resolve(data *SSuggestSysAlert) error
@@ -50,6 +53,14 @@ func RegisterSuggestSysRuleDrivers(drvs ...ISuggestSysRuleDriver) {
 	}
 }
 
-func GetSuggestSysRuleDrivers() map[string]ISuggestSysRuleDriver {
+func GetSuggestSysRuleDrivers() map[monitor.SuggestDriverType]ISuggestSysRuleDriver {
 	return suggestSysRuleDrivers
+}
+
+func GetSuggestSysRuleResourceTypes() sets.String {
+	result := sets.NewString()
+	for _, drv := range suggestSysRuleDrivers {
+		result.Insert(string(drv.GetResourceType()))
+	}
+	return result
 }

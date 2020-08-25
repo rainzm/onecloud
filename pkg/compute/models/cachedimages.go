@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/timeutils"
 	"yunion.io/x/sqlchemy"
 
@@ -81,6 +82,10 @@ type SCachedimage struct {
 	// 引用次数
 	// example: 0
 	RefCount int `default:"0" list:"user"`
+
+	// 是否支持UEFI
+	// example: false
+	UEFI tristate.TriState `default:"false" list:"user"`
 
 	// 镜像类型, system: 公有云镜像, customized: 自定义镜像
 	// example: system
@@ -170,7 +175,9 @@ func (self *SCachedimage) getStoragecacheCount() (int, error) {
 }
 
 func (self *SCachedimage) GetImage() (*cloudprovider.SImage, error) {
-	image := cloudprovider.SImage{}
+	image := cloudprovider.SImage{
+		ExternalId: self.ExternalId,
+	}
 
 	err := self.Info.Unmarshal(&image)
 	if err != nil {
@@ -215,7 +222,7 @@ func (manager *SCachedimageManager) cacheGlanceImageInfo(ctx context.Context, us
 			imageCache.Info = info
 			imageCache.LastSync = timeutils.UtcNow()
 
-			err = manager.TableSpec().Insert(&imageCache)
+			err = manager.TableSpec().Insert(ctx, &imageCache)
 			if err != nil {
 				return nil, err
 			}
@@ -454,6 +461,7 @@ func (self *SCachedimage) syncWithCloudImage(ctx context.Context, userCred mccli
 		self.Size = image.GetSizeByte()
 		self.ExternalId = image.GetGlobalId()
 		self.ImageType = image.GetImageType()
+		self.UEFI = tristate.NewFromBool(image.UEFI())
 		sImage := cloudprovider.CloudImage2Image(image)
 		self.Info = jsonutils.Marshal(&sImage)
 		self.LastSync = time.Now().UTC()
@@ -477,13 +485,14 @@ func (manager *SCachedimageManager) newFromCloudImage(ctx context.Context, userC
 
 	cachedImage.Name = newName
 	cachedImage.Size = image.GetSizeByte()
+	cachedImage.UEFI = tristate.NewFromBool(image.UEFI())
 	sImage := cloudprovider.CloudImage2Image(image)
 	cachedImage.Info = jsonutils.Marshal(&sImage)
 	cachedImage.LastSync = time.Now().UTC()
 	cachedImage.ImageType = image.GetImageType()
 	cachedImage.ExternalId = image.GetGlobalId()
 
-	err = manager.TableSpec().Insert(&cachedImage)
+	err = manager.TableSpec().Insert(ctx, &cachedImage)
 	if err != nil {
 		return nil, err
 	}

@@ -234,7 +234,7 @@ func (spm *SScalingPolicyManager) ValidateCreateData(ctx context.Context, userCr
 	}
 	input, err = trigger.ValidateCreateData(input)
 	if err != nil {
-		return input, httperrors.NewInputParameterError(err.Error())
+		return input, httperrors.NewInputParameterError("%v", err)
 	}
 	return input, err
 }
@@ -304,20 +304,24 @@ func (sp *SScalingPolicy) Trigger(input *api.ScalingPolicyCreateInput) (IScaling
 		case api.TRIGGER_TIMING:
 			return &SScalingTimer{
 				SScalingPolicyBase: SScalingPolicyBase{sp.GetId()},
-				Type:               api.TIMER_TYPE_ONCE,
-				StartTime:          input.Timer.ExecTime,
-				EndTime:            input.Timer.ExecTime,
-				NextTime:           input.Timer.ExecTime,
+				STimer: STimer{
+					Type:      api.TIMER_TYPE_ONCE,
+					StartTime: input.Timer.ExecTime,
+					EndTime:   input.Timer.ExecTime,
+					NextTime:  input.Timer.ExecTime,
+				},
 			}, nil
 		case api.TRIGGER_CYCLE:
 			trigger := &SScalingTimer{
 				SScalingPolicyBase: SScalingPolicyBase{sp.GetId()},
-				Type:               input.CycleTimer.CycleType,
-				Minute:             input.CycleTimer.Minute,
-				Hour:               input.CycleTimer.Hour,
-				StartTime:          input.CycleTimer.StartTime,
-				EndTime:            input.CycleTimer.EndTime,
-				NextTime:           time.Time{},
+				STimer: STimer{
+					Type:      input.CycleTimer.CycleType,
+					Minute:    input.CycleTimer.Minute,
+					Hour:      input.CycleTimer.Hour,
+					StartTime: input.CycleTimer.StartTime,
+					EndTime:   input.CycleTimer.EndTime,
+					NextTime:  time.Time{},
+				},
 			}
 			log.Debugf("setweekdays")
 			trigger.SetWeekDays(input.CycleTimer.WeekDays)

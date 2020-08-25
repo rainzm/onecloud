@@ -29,8 +29,9 @@ import (
 )
 
 const (
-	AlertNotificationUsedByMeterAlert = "meter_alert"
-	AlertNotificationUsedByNodeAlert  = "node_alert"
+	AlertNotificationUsedByMeterAlert  = "meter_alert"
+	AlertNotificationUsedByNodeAlert   = "node_alert"
+	AlertNotificationUsedByCommonAlert = "common_alert"
 )
 
 type SAlertNotificationManager struct {
@@ -162,19 +163,11 @@ func (joint *SAlertnotification) GetExtraDetails(
 }
 
 func (joint *SAlertnotification) DoSave(ctx context.Context, userCred mcclient.TokenCredential) error {
-	if err := AlertNotificationManager.TableSpec().Insert(joint); err != nil {
+	if err := AlertNotificationManager.TableSpec().Insert(ctx, joint); err != nil {
 		return err
 	}
 	joint.SetModelManager(AlertNotificationManager, joint)
 	return nil
-}
-
-func (joint *SAlertnotification) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SAlertnotification) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
 }
 
 func (joint *SAlertnotification) GetNotification() (*SNotification, error) {

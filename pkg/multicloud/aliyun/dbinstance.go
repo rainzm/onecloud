@@ -630,6 +630,9 @@ func (region *SRegion) CreateIDBInstance(desc *cloudprovider.SManagedDBInstanceC
 	if len(desc.Address) > 0 {
 		params["PrivateIpAddress"] = desc.Address
 	}
+	if len(desc.ProjectId) > 0 {
+		params["ResourceGroupId"] = desc.ProjectId
+	}
 	if desc.BillingCycle != nil {
 		params["PayType"] = "Prepaid"
 		if desc.BillingCycle.GetMonths() > 0 {
@@ -759,26 +762,25 @@ func (rds *SDBInstance) ClosePublicConnection() error {
 }
 
 func (rds *SDBInstance) RecoveryFromBackup(conf *cloudprovider.SDBInstanceRecoveryConfig) error {
-	return rds.region.RecoveryDBInstanceFromBackup(rds.DBInstanceId, conf.BackupId, conf.Databases)
+	if len(conf.OriginDBInstanceExternalId) == 0 {
+		conf.OriginDBInstanceExternalId = rds.DBInstanceId
+	}
+	return rds.region.RecoveryDBInstanceFromBackup(conf.OriginDBInstanceExternalId, rds.DBInstanceId, conf.BackupId, conf.Databases)
 }
 
-func (region *SRegion) RecoveryDBInstanceFromBackup(instanceId string, backupId string, databases map[string]string) error {
-	dbs := []string{}
-	for k, v := range databases {
-		dbs = append(dbs, fmt.Sprintf(`"%s":"%s"`, k, v))
-	}
+func (region *SRegion) RecoveryDBInstanceFromBackup(srcId, destId string, backupId string, databases map[string]string) error {
 	params := map[string]string{
-		"RegionId":     region.RegionId,
-		"DBInstanceId": instanceId,
-		"BackupId":     backupId,
-		"DbNames":      strings.Join(dbs, ","),
+		"RegionId":           region.RegionId,
+		"DBInstanceId":       srcId,
+		"TargetDBInstanceId": destId,
+		"BackupId":           backupId,
+		"DbNames":            jsonutils.Marshal(databases).String(),
 	}
 	_, err := region.rdsRequest("RecoveryDBInstance", params)
 	if err != nil {
 		return errors.Wrap(err, "rdsRequest.RecoveryDBInstance")
 	}
 	return nil
-
 }
 
 func (rds *SDBInstance) GetProjectId() string {

@@ -21,6 +21,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/secrules"
 
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -41,6 +42,26 @@ func init() {
 	models.RegisterRegionDriver(&driver)
 }
 
+func (self *SGoogleRegionDriver) GetSecurityGroupRuleOrder() cloudprovider.TPriorityOrder {
+	return cloudprovider.PriorityOrderByAsc
+}
+
+func (self *SGoogleRegionDriver) GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("in:deny any")}
+}
+
+func (self *SGoogleRegionDriver) GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("out:allow any")}
+}
+
+func (self *SGoogleRegionDriver) GetSecurityGroupRuleMaxPriority() int {
+	return 0
+}
+
+func (self *SGoogleRegionDriver) GetSecurityGroupRuleMinPriority() int {
+	return 65535
+}
+
 func (self *SGoogleRegionDriver) GetProvider() string {
 	return api.CLOUD_PROVIDER_GOOGLE
 }
@@ -51,6 +72,10 @@ func (self *SGoogleRegionDriver) IsSecurityGroupBelongGlobalVpc() bool {
 
 func (self *SGoogleRegionDriver) IsVpcBelongGlobalVpc() bool {
 	return true
+}
+
+func (self *SGoogleRegionDriver) IsVpcCreateNeedInputCidr() bool {
+	return false
 }
 
 func (self *SGoogleRegionDriver) RequestCreateVpc(ctx context.Context, userCred mcclient.TokenCredential, region *models.SCloudregion, vpc *models.SVpc, task taskman.ITask) error {
@@ -159,6 +184,10 @@ func (self *SGoogleRegionDriver) IsSupportedDBInstance() bool {
 	return true
 }
 
+func (self *SGoogleRegionDriver) ValidateDBInstanceRecovery(ctx context.Context, userCred mcclient.TokenCredential, instance *models.SDBInstance, backup *models.SDBInstanceBackup, input api.SDBInstanceRecoveryConfigInput) error {
+	return nil
+}
+
 func (self *SGoogleRegionDriver) ValidateCreateDBInstanceData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input api.DBInstanceCreateInput, skus []models.SDBInstanceSku, network *models.SNetwork) (api.DBInstanceCreateInput, error) {
 	if input.BillingType == billing_api.BILLING_TYPE_PREPAID {
 		return input, httperrors.NewInputParameterError("Google dbinstance not support prepaid billing type")
@@ -175,7 +204,7 @@ func (self *SGoogleRegionDriver) ValidateCreateDBInstanceData(ctx context.Contex
 	return input, nil
 }
 
-func (self *SGoogleRegionDriver) InitDBInstanceUser(instance *models.SDBInstance, task taskman.ITask, desc *cloudprovider.SManagedDBInstanceCreateConfig) error {
+func (self *SGoogleRegionDriver) InitDBInstanceUser(ctx context.Context, instance *models.SDBInstance, task taskman.ITask, desc *cloudprovider.SManagedDBInstanceCreateConfig) error {
 	user := "root"
 	switch desc.Engine {
 	case api.DBINSTANCE_TYPE_POSTGRESQL:
@@ -192,7 +221,7 @@ func (self *SGoogleRegionDriver) InitDBInstanceUser(instance *models.SDBInstance
 	account.Status = api.DBINSTANCE_USER_AVAILABLE
 	account.ExternalId = user
 	account.SetModelManager(models.DBInstanceAccountManager, &account)
-	err := models.DBInstanceAccountManager.TableSpec().Insert(&account)
+	err := models.DBInstanceAccountManager.TableSpec().Insert(ctx, &account)
 	if err != nil {
 		return err
 	}
@@ -236,6 +265,7 @@ func (self *SGoogleRegionDriver) RequestCreateDBInstanceBackup(ctx context.Conte
 
 		result := models.DBInstanceBackupManager.SyncDBInstanceBackups(ctx, userCred, backup.GetCloudprovider(), instance, backup.GetRegion(), backups)
 		log.Infof("SyncDBInstanceBackups for dbinstance %s(%s) result: %s", instance.Name, instance.Id, result.Result())
+		instance.SetStatus(userCred, api.DBINSTANCE_RUNNING, "")
 		return nil, nil
 	})
 	return nil

@@ -128,6 +128,7 @@ func (self *SClassicVpc) getClassicSecurityGroups() ([]SClassicSecurityGroup, er
 	}
 	for i := 0; i < len(securityGroups); i++ {
 		securityGroups[i].vpc = self
+		securityGroups[i].region = self.region
 	}
 	return securityGroups, nil
 }
@@ -201,7 +202,7 @@ func (self *SClassicVpc) GetRegion() cloudprovider.ICloudRegion {
 }
 
 func (self *SClassicVpc) GetStatus() string {
-	return api.VPC_STATUS_UNAVAILABLE
+	return api.VPC_STATUS_AVAILABLE
 }
 
 func (self *SClassicVpc) Refresh() error {

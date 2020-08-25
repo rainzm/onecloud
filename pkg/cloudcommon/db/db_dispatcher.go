@@ -266,7 +266,6 @@ func listItemQueryFiltersRaw(manager IModelManager,
 		q = manager.FilterBySystemAttributes(q, userCred, query, queryScope)
 		q = manager.FilterByHiddenSystemAttributes(q, userCred, query, queryScope)
 	}
-
 	q, err = ListItemFilter(manager, ctx, q, userCred, query)
 	if err != nil {
 		return nil, err
@@ -415,7 +414,6 @@ func Query2List(manager IModelManager, ctx context.Context, userCred mcclient.To
 			sortedListFields = stringutils2.NewSortedStrings(fieldFilter)
 		}
 		extraRows, err := FetchCustomizeColumns(manager, ctx, userCred, query, items, sortedListFields, true)
-
 		if err != nil {
 			return nil, errors.Wrap(err, "FetchCustomizeColumns")
 		}
@@ -565,7 +563,7 @@ func ListItems(manager IModelManager, ctx context.Context, userCred mcclient.Tok
 		if err != nil {
 			return nil, err
 		}
-		// log.Debugf("total count %d", totalCnt)
+		//log.Debugf("total count %d", totalCnt)
 		if totalCnt == 0 {
 			emptyList := modulebase.ListResult{Data: []jsonutils.JSONObject{}}
 			return &emptyList, nil
@@ -853,29 +851,44 @@ func getItemDetails(manager IModelManager, item IModel, ctx context.Context, use
 }
 
 func (dispatcher *DBModelDispatcher) tryGetModelProperty(ctx context.Context, property string, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	userCred := fetchUserCredential(ctx)
 	funcName := fmt.Sprintf("GetProperty%s", utils.Kebab2Camel(property, "-"))
 	allowFuncName := "Allow" + funcName
 	modelValue := reflect.ValueOf(dispatcher.modelManager)
+	params := []interface{}{ctx, userCred, query}
 
-	funcValue := modelValue.MethodByName(allowFuncName)
+	funcValue := modelValue.MethodByName(funcName)
 	if !funcValue.IsValid() || funcValue.IsNil() {
 		return nil, nil
 	}
-	userCred := fetchUserCredential(ctx)
-	params := []interface{}{ctx, userCred, query}
-	outs, err := callFunc(funcValue, allowFuncName, params...)
-	if err != nil {
-		return nil, httperrors.NewInternalServerError("reflect call %s fail %s", allowFuncName, err)
-	}
-	if len(outs) != 1 {
-		return nil, httperrors.NewInternalServerError("Invald %s return value", funcName)
-	}
-	if !outs[0].Bool() {
-		return nil, httperrors.NewForbiddenError("%s not allow to get property %s", dispatcher.Keyword(), property)
+
+	if consts.IsRbacEnabled() {
+		ownerId, err := fetchOwnerId(ctx, dispatcher.modelManager, userCred, query)
+		if err != nil {
+			return nil, httperrors.NewGeneralError(err)
+		}
+		err = isClassRbacAllowed(dispatcher.modelManager, userCred, ownerId, policy.PolicyActionList, property)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		funcValue := modelValue.MethodByName(allowFuncName)
+		if !funcValue.IsValid() || funcValue.IsNil() {
+			return nil, nil
+		}
+		outs, err := callFunc(funcValue, allowFuncName, params...)
+		if err != nil {
+			return nil, httperrors.NewInternalServerError("reflect call %s fail %s", allowFuncName, err)
+		}
+		if len(outs) != 1 {
+			return nil, httperrors.NewInternalServerError("Invald %s return value", funcName)
+		}
+		if !outs[0].Bool() {
+			return nil, httperrors.NewForbiddenError("%s not allow to get property %s", dispatcher.Keyword(), property)
+		}
 	}
 
-	funcValue = modelValue.MethodByName(funcName)
-	outs, err = callFunc(funcValue, funcName, params...)
+	outs, err := callFunc(funcValue, funcName, params...)
 	if err != nil {
 		return nil, httperrors.NewInternalServerError("reflect call %s fail %s", funcName, err)
 	}
@@ -1152,7 +1165,7 @@ func _doCreateItem(
 
 	err = jsonutils.CheckRequiredFields(dataDict, createRequireFields(manager, userCred))
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 	model, err := NewModelObject(manager)
 	if err != nil {
@@ -1167,7 +1180,7 @@ func _doCreateItem(
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
-	err = manager.TableSpec().InsertOrUpdate(model)
+	err = manager.TableSpec().InsertOrUpdate(ctx, model)
 	if err != nil {
 		return nil, httperrors.NewGeneralError(err)
 	}
@@ -1385,7 +1398,7 @@ func (dispatcher *DBModelDispatcher) BatchCreate(ctx context.Context, query json
 			body, err := getItemDetails(manager, res.model, ctx, userCred, query)
 			if err != nil {
 				result.Status = 500
-				result.Data = jsonutils.NewString(err.Error())
+				result.Data = jsonutils.NewString(err.Error()) // no translation here
 			} else {
 				result.Status = 200
 				result.Data = body
@@ -1471,6 +1484,9 @@ func (dispatcher *DBModelDispatcher) PerformAction(ctx context.Context, idStr st
 	lockman.LockObject(ctx, model)
 	defer lockman.ReleaseObject(ctx, model)
 
+	if err := model.PreCheckPerformAction(ctx, userCred, action, query, data); err != nil {
+		return nil, err
+	}
 	return objectPerformAction(dispatcher, model, reflect.ValueOf(model), ctx, userCred, action, query, data)
 }
 
@@ -1519,9 +1535,8 @@ func reflectDispatcherInternal(
 	if !funcValue.IsValid() || funcValue.IsNil() {
 		funcValue = modelValue.MethodByName(generalFuncName)
 		if !funcValue.IsValid() || funcValue.IsNil() {
-			msg := fmt.Sprintf("%s %s %s not found", dispatcher.Keyword(), operator, spec)
-			log.Errorf(msg)
-			return nil, httperrors.NewActionNotFoundError(msg)
+			return nil, httperrors.NewActionNotFoundError("%s %s %s not found",
+				dispatcher.Keyword(), operator, spec)
 		} else {
 			isGeneral = true
 			funcName = generalFuncName
@@ -1556,9 +1571,8 @@ func reflectDispatcherInternal(
 		allowFuncName := "Allow" + funcName
 		allowFuncValue := modelValue.MethodByName(allowFuncName)
 		if !allowFuncValue.IsValid() || allowFuncValue.IsNil() {
-			msg := fmt.Sprintf("%s allow %s %s not found", dispatcher.Keyword(), operator, spec)
-			log.Errorf(msg)
-			return nil, httperrors.NewActionNotFoundError(msg)
+			return nil, httperrors.NewActionNotFoundError("%s allow %s %s not found",
+				dispatcher.Keyword(), operator, spec)
 		}
 
 		outs, err := callFunc(allowFuncValue, allowFuncName, params...)
@@ -1725,7 +1739,7 @@ func deleteItem(manager IModelManager, model IModel, ctx context.Context, userCr
 	err = CustomizeDelete(model, ctx, userCred, query, data)
 	if err != nil {
 		log.Errorf("customize delete error: %s", err)
-		return nil, httperrors.NewNotAcceptableError(err.Error())
+		return nil, httperrors.NewNotAcceptableError("%v", err)
 	}
 
 	details, err := getItemDetails(manager, model, ctx, userCred, query)

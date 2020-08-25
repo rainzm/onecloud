@@ -89,6 +89,10 @@ func (self *SBaseGuestDriver) StartDeleteGuestTask(ctx context.Context, userCred
 	return nil
 }
 
+func (self *SBaseGuestDriver) ValidateImage(ctx context.Context, image *cloudprovider.SImage) error {
+	return nil
+}
+
 func (self *SBaseGuestDriver) RequestDetachDisksFromGuestForDelete(ctx context.Context, guest *models.SGuest, task taskman.ITask) error {
 	task.ScheduleRun(nil)
 	return nil
@@ -125,6 +129,10 @@ func (self *SBaseGuestDriver) GetRebuildRootStatus() ([]string, error) {
 }
 
 func (self *SBaseGuestDriver) IsRebuildRootSupportChangeImage() bool {
+	return true
+}
+
+func (self *SBaseGuestDriver) IsRebuildRootSupportChangeUEFI() bool {
 	return true
 }
 
@@ -353,4 +361,27 @@ func (self *SBaseGuestDriver) IsSupportSetAutoRenew() bool {
 
 func (self *SBaseGuestDriver) RequestSetAutoRenewInstance(ctx context.Context, userCred mcclient.TokenCredential, guest *models.SGuest, autoRenew bool, task taskman.ITask) error {
 	return fmt.Errorf("Not Implement RequestSetAutoRenewInstance")
+}
+
+func (self *SBaseGuestDriver) IsSupportMigrate() bool {
+	return false
+}
+
+func (self *SBaseGuestDriver) IsSupportLiveMigrate() bool {
+	return false
+}
+
+func (self *SBaseGuestDriver) CheckMigrate(guest *models.SGuest, userCred mcclient.TokenCredential, input api.GuestMigrateInput) error {
+	return httperrors.NewNotAcceptableError("Not allow for hypervisor %s", guest.GetHypervisor())
+}
+
+func (self *SBaseGuestDriver) CheckLiveMigrate(guest *models.SGuest, userCred mcclient.TokenCredential, input api.GuestLiveMigrateInput) error {
+	return httperrors.NewNotAcceptableError("Not allow for hypervisor %s", guest.GetHypervisor())
+}
+func (self *SBaseGuestDriver) RequestMigrate(ctx context.Context, guest *models.SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error {
+	return fmt.Errorf("Not Implement RequestMigrate")
+}
+
+func (self *SBaseGuestDriver) RequestLiveMigrate(ctx context.Context, guest *models.SGuest, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, task taskman.ITask) error {
+	return fmt.Errorf("Not Implement RequestLiveMigrate")
 }

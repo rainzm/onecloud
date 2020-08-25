@@ -90,10 +90,10 @@ func (manager *SProjectManager) GetContextManagers() [][]db.IModelManager {
 }
 
 func (manager *SProjectManager) InitializeData() error {
-	return manager.initSysProject()
+	return manager.initSysProject(context.TODO())
 }
 
-func (manager *SProjectManager) initSysProject() error {
+func (manager *SProjectManager) initSysProject(ctx context.Context) error {
 	q := manager.Query().Equals("name", api.SystemAdminProject)
 	q = q.Equals("domain_id", api.DEFAULT_DOMAIN_ID)
 	cnt, err := q.CountWithError()
@@ -117,7 +117,7 @@ func (manager *SProjectManager) initSysProject() error {
 	project.ParentId = api.DEFAULT_DOMAIN_ID
 	project.SetModelManager(manager, &project)
 
-	err = manager.TableSpec().Insert(&project)
+	err = manager.TableSpec().Insert(ctx, &project)
 	if err != nil {
 		return errors.Wrap(err, "insert")
 	}
@@ -222,7 +222,7 @@ func (manager *SProjectManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SIdentityBaseResourceManager.ListItemFilter")
 	}
 
-	userStr := query.User
+	userStr := query.UserId
 	if len(userStr) > 0 {
 		userObj, err := UserManager.FetchById(userStr)
 		if err != nil {
@@ -233,10 +233,20 @@ func (manager *SProjectManager) ListItemFilter(
 			}
 		}
 		subq := AssignmentManager.fetchUserProjectIdsQuery(userObj.GetId())
-		q = q.In("id", subq.SubQuery())
+		if query.Jointable != nil && *query.Jointable {
+			user := userObj.(*SUser)
+			if user.DomainId == api.DEFAULT_DOMAIN_ID {
+				q = q.Equals("domain_id", api.DEFAULT_DOMAIN_ID)
+			} else {
+				q = q.In("domain_id", []string{user.DomainId, api.DEFAULT_DOMAIN_ID})
+			}
+			q = q.NotIn("id", subq.SubQuery())
+		} else {
+			q = q.In("id", subq.SubQuery())
+		}
 	}
 
-	groupStr := query.Group
+	groupStr := query.GroupId
 	if len(groupStr) > 0 {
 		groupObj, err := GroupManager.FetchById(groupStr)
 		if err != nil {
@@ -247,7 +257,17 @@ func (manager *SProjectManager) ListItemFilter(
 			}
 		}
 		subq := AssignmentManager.fetchGroupProjectIdsQuery(groupObj.GetId())
-		q = q.In("id", subq.SubQuery())
+		if query.Jointable != nil && *query.Jointable {
+			group := groupObj.(*SGroup)
+			if group.DomainId == api.DEFAULT_DOMAIN_ID {
+				q = q.Equals("domain_id", api.DEFAULT_DOMAIN_ID)
+			} else {
+				q = q.In("domain_id", []string{group.DomainId, api.DEFAULT_DOMAIN_ID})
+			}
+			q = q.NotIn("id", subq.SubQuery())
+		} else {
+			q = q.In("id", subq.SubQuery())
+		}
 	}
 
 	return q, nil
@@ -375,14 +395,14 @@ func projectExtra(proj *SProject, out api.ProjectDetails) api.ProjectDetails {
 		if update.IsZero() {
 			update = time.Now()
 		}
-		nextUpdate := update.Add(time.Duration(options.Options.FetchProjectResourceCountIntervalSeconds) * time.Second)
+		nextUpdate := update.Add(time.Duration(options.Options.FetchScopeResourceCountIntervalSeconds) * time.Second)
 		out.ExtResourcesNextUpdate = nextUpdate
 	}
 	return out
 }
 
 func (proj *SProject) getExternalResources() (map[string]int, time.Time, error) {
-	return ProjectResourceManager.getProjectResource(proj.Id)
+	return ScopeResourceManager.getScopeResource("", proj.Id, "")
 }
 
 func NormalizeProjectName(name string) string {
@@ -482,6 +502,7 @@ func (project *SProject) AllowPerformJoin(ctx context.Context,
 	return db.IsAdminAllowPerform(userCred, project, "join")
 }
 
+// 将用户或组加入项目
 func (project *SProject) PerformJoin(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -490,7 +511,7 @@ func (project *SProject) PerformJoin(
 ) (jsonutils.JSONObject, error) {
 	err := input.Validate()
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 
 	roleNames := make([]string, 0)
@@ -567,6 +588,7 @@ func (project *SProject) AllowPerformLeave(ctx context.Context,
 	return db.IsAdminAllowPerform(userCred, project, "leave")
 }
 
+// 将用户或组移出项目
 func (project *SProject) PerformLeave(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -575,7 +597,7 @@ func (project *SProject) PerformLeave(
 ) (jsonutils.JSONObject, error) {
 	err := input.Validate()
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 
 	for i := range input.UserRoles {
@@ -657,7 +679,7 @@ func (manager *SProjectManager) NewProject(ctx context.Context, projectName stri
 	project.Description = desc
 	project.IsDomain = tristate.False
 	project.ParentId = domainId
-	err = ProjectManager.TableSpec().Insert(project)
+	err = ProjectManager.TableSpec().Insert(ctx, project)
 	if err != nil {
 		return nil, errors.Wrap(err, "Insert")
 	}

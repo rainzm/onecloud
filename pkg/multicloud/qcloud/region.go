@@ -183,6 +183,10 @@ func (self *SRegion) CreateILoadBalancer(loadbalancer *cloudprovider.SLoadbalanc
 		"VpcId":            loadbalancer.VpcID,
 	}
 
+	if len(loadbalancer.ProjectId) > 0 {
+		params["ProjectId"] = loadbalancer.ProjectId
+	}
+
 	if loadbalancer.AddressType != api.LB_ADDR_TYPE_INTERNET {
 		params["SubnetId"] = loadbalancer.NetworkIDs[0]
 	}
@@ -930,8 +934,8 @@ func (self *SRegion) GetISecurityGroupById(secgroupId string) (cloudprovider.ICl
 	return self.GetSecurityGroupDetails(secgroupId)
 }
 
-func (self *SRegion) GetISecurityGroupByName(vpcId string, name string) (cloudprovider.ICloudSecurityGroup, error) {
-	secgroups, total, err := self.GetSecurityGroups(vpcId, name, 0, 0)
+func (self *SRegion) GetISecurityGroupByName(opts *cloudprovider.SecurityGroupFilterOptions) (cloudprovider.ICloudSecurityGroup, error) {
+	secgroups, total, err := self.GetSecurityGroups(opts.VpcId, opts.Name, 0, 0)
 	if err != nil {
 		return nil, err
 	}

@@ -19,7 +19,6 @@ import (
 	"strings"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
-	"yunion.io/x/onecloud/pkg/cloudprovider"
 )
 
 // https://support.huaweicloud.com/api-iam/zh-cn_topic_0057845625.html
@@ -48,9 +47,17 @@ func (self *SProject) GetHealthStatus() string {
 }
 
 func (self *SHuaweiClient) fetchProjects() ([]SProject, error) {
+	if self.projects != nil {
+		return self.projects, nil
+	}
+
 	huawei, _ := self.newGeneralAPIClient()
 	projects := make([]SProject, 0)
 	err := doListAll(huawei.Projects.List, nil, &projects)
+	if err == nil {
+		self.projects = projects
+	}
+
 	return projects, err
 }
 
@@ -70,8 +77,4 @@ func (self *SHuaweiClient) GetProjectById(projectId string) (SProject, error) {
 
 func (self *SHuaweiClient) GetProjects() ([]SProject, error) {
 	return self.fetchProjects()
-}
-
-func (self *SHuaweiClient) GetIProjects() ([]cloudprovider.ICloudProject, error) {
-	return nil, cloudprovider.ErrNotImplemented
 }

@@ -228,6 +228,7 @@ func (policy *SPolicy) AllowPerformPublic(ctx context.Context, userCred mcclient
 	return true
 }
 
+// 共享Policy
 func (policy *SPolicy) PerformPublic(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPublicDomainInput) (jsonutils.JSONObject, error) {
 	err := db.SharablePerformPublic(policy, ctx, userCred, apis.PerformPublicProjectInput{PerformPublicDomainInput: input})
 	if err != nil {
@@ -241,6 +242,7 @@ func (policy *SPolicy) AllowPerformPrivate(ctx context.Context, userCred mcclien
 	return true
 }
 
+// 设置policy为私有
 func (policy *SPolicy) PerformPrivate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPrivateInput) (jsonutils.JSONObject, error) {
 	err := db.SharablePerformPrivate(policy, ctx, userCred)
 	if err != nil {
@@ -261,9 +263,9 @@ func (policy *SPolicy) Delete(ctx context.Context, userCred mcclient.TokenCreden
 }
 
 func (policy *SPolicy) ValidateDeleteCondition(ctx context.Context) error {
-	if policy.IsShared() {
-		return httperrors.NewInvalidStatusError("cannot delete shared policy")
-	}
+	// if policy.IsShared() {
+	// 	return httperrors.NewInvalidStatusError("cannot delete shared policy")
+	// }
 	if policy.Enabled.IsTrue() {
 		return httperrors.NewInvalidStatusError("cannot delete enabled policy")
 	}

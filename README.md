@@ -1,7 +1,7 @@
 # Yunion OneCloud
 
 [![CircleCI](https://circleci.com/gh/yunionio/onecloud.svg?style=svg)](https://circleci.com/gh/yunionio/onecloud) 
-[![Build Status](https://travis-ci.com/yunionio/onecloud.svg?branch=master)](https://travis-ci.org/yunionio/onecloud) 
+[![Build Status](https://travis-ci.com/yunionio/onecloud.svg?branch=master)](https://travis-ci.com/yunionio/onecloud/branches) 
 [![Go Report Card](https://goreportcard.com/badge/github.com/yunionio/onecloud)](https://goreportcard.com/report/github.com/yunionio/onecloud) 
 
 ### [README in Chinese](./README-CN.md)
@@ -44,7 +44,7 @@ Please refers to [install & deployment](https://docs.yunion.io/docs/setup/) (cur
 
 ## Architecture
 
-![architecture](./docs/architecture.png)
+![architecture](./docs/architecture.svg)
 
 ## Contribution
 

@@ -21,6 +21,7 @@ import (
 type Vpc struct {
 	compute_models.SVpc
 
+	Wire     *Wire    `json:"-"`
 	Networks Networks `json:"-"`
 }
 
@@ -30,27 +31,40 @@ func (el *Vpc) Copy() *Vpc {
 	}
 }
 
+type Wire struct {
+	compute_models.SWire
+
+	Vpc *Vpc
+}
+
+func (el *Wire) Copy() *Wire {
+	return &Wire{
+		SWire: el.SWire,
+	}
+}
+
 type Network struct {
 	compute_models.SNetwork
-	// returned as extra column
-	VpcId string
 
 	Vpc           *Vpc          `json:"-"`
+	Wire          *Wire         `json:"-"`
 	Guestnetworks Guestnetworks `json:"-"`
+	Elasticips    Elasticips    `json:"-"`
 }
 
 func (el *Network) Copy() *Network {
 	return &Network{
 		SNetwork: el.SNetwork,
-		VpcId:    el.VpcId,
 	}
 }
 
 type Guestnetwork struct {
 	compute_models.SGuestnetwork
 
-	Guest   *Guest   `json:"-"`
-	Network *Network `json:"-"`
+	// Guest could be nil for when the guest is pending_deleted
+	Guest     *Guest     `json:"-"`
+	Network   *Network   `json:"-"`
+	Elasticip *Elasticip `json:"-"`
 }
 
 func (el *Guestnetwork) Copy() *Guestnetwork {
@@ -121,5 +135,28 @@ type SecurityGroupRule struct {
 func (el *SecurityGroupRule) Copy() *SecurityGroupRule {
 	return &SecurityGroupRule{
 		SSecurityGroupRule: el.SSecurityGroupRule,
+	}
+}
+
+type Elasticip struct {
+	compute_models.SElasticip
+
+	Network      *Network      `json:"-"`
+	Guestnetwork *Guestnetwork `json:"-"`
+}
+
+func (el *Elasticip) Copy() *Elasticip {
+	return &Elasticip{
+		SElasticip: el.SElasticip,
+	}
+}
+
+type DnsRecord struct {
+	compute_models.SDnsRecord
+}
+
+func (el *DnsRecord) Copy() *DnsRecord {
+	return &DnsRecord{
+		SDnsRecord: el.SDnsRecord,
 	}
 }

@@ -31,7 +31,6 @@ import (
 	"yunion.io/x/onecloud/pkg/apigateway/options"
 	policytool "yunion.io/x/onecloud/pkg/apigateway/policy"
 	"yunion.io/x/onecloud/pkg/apis/compute"
-	"yunion.io/x/onecloud/pkg/appctx"
 	"yunion.io/x/onecloud/pkg/appsrv"
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -42,14 +41,11 @@ import (
 	"yunion.io/x/onecloud/pkg/util/httputils"
 	"yunion.io/x/onecloud/pkg/util/netutils2"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
+	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
 func AppContextToken(ctx context.Context) mcclient.TokenCredential {
-	val := ctx.Value(appctx.AppContextKey(constants.AUTH_TOKEN))
-	if val == nil {
-		return nil
-	}
-	return val.(mcclient.TokenCredential)
+	return auth.FetchUserCredential(ctx, nil)
 }
 
 type AuthHandlers struct {
@@ -68,14 +64,23 @@ func (h *AuthHandlers) AddMethods() {
 	// no middleware handler
 	h.AddByMethod(GET, nil,
 		NewHP(h.getRegions, "regions"),
+		NewHP(h.getIdpSsoRedirectUri, "sso", "redirect", "<idp_id>"),
 		NewHP(h.listTotpRecoveryQuestions, "recovery"),
+		NewHP(h.handleSsoLogin, "ssologin"),
+		// oidc auth
+		NewHP(handleOIDCAuth, "oidc", "auth"),
+		NewHP(handleOIDCConfiguration, "oidc", ".well-known", "openid-configuration"),
+		NewHP(handleOIDCJWKeys, "oidc", "keys"),
 	)
 	h.AddByMethod(POST, nil,
+		NewHP(h.initTotpSecrets, "initcredential"),
 		NewHP(h.resetTotpSecrets, "credential"),
 		NewHP(h.validatePasscode, "passcode"),
 		NewHP(h.resetTotpRecoveryQuestions, "recovery"),
 		NewHP(h.postLoginHandler, "login"),
 		NewHP(h.postLogoutHandler, "logout"),
+		NewHP(h.handleSsoLogin, "ssologin"),
+		NewHP(handleOIDCToken, "oidc", "token"),
 	)
 
 	// auth middleware handler
@@ -84,11 +89,16 @@ func (h *AuthHandlers) AddMethods() {
 		NewHP(h.getPermissionDetails, "permissions"),
 		NewHP(h.getAdminResources, "admin_resources"),
 		NewHP(h.getResources, "scoped_resources"),
+		NewHP(fetchIdpBasicConfig, "idp", "<idp_id>", "info"),
+		NewHP(fetchIdpSAMLMetadata, "idp", "<idp_id>", "saml-metadata"),
+		// oidc
+		NewHP(handleOIDCUserInfo, "oidc", "user"),
 	)
 	h.AddByMethod(POST, FetchAuthToken,
 		NewHP(h.resetUserPassword, "password"),
 		NewHP(h.getPermissionDetails, "permissions"),
 		NewHP(h.doCreatePolicies, "policies"),
+		NewHP(handleUnlinkIdp, "unlink-idp"),
 	)
 	h.AddByMethod(PATCH, FetchAuthToken,
 		NewHP(h.doPatchPolicy, "policies", "<policy_id>"),
@@ -104,6 +114,14 @@ func (h *AuthHandlers) Bind(app *appsrv.Application) {
 }
 
 func (h *AuthHandlers) GetRegionsResponse(ctx context.Context, w http.ResponseWriter, req *http.Request) (*jsonutils.JSONDict, error) {
+	var currentDomain string
+	var createUser bool
+	qs, _ := jsonutils.ParseQueryString(req.URL.RawQuery)
+	if qs != nil {
+		currentDomain, _ = qs.GetString("domain")
+		createUser = jsonutils.QueryBoolean(qs, "auto_create_user", true)
+	}
+
 	adminToken := auth.AdminCredential()
 	if adminToken == nil {
 		return nil, errors.Error("failed to get admin credential")
@@ -112,49 +130,53 @@ func (h *AuthHandlers) GetRegionsResponse(ctx context.Context, w http.ResponseWr
 	if len(regions) == 0 {
 		return nil, errors.Error("region is empty")
 	}
-	regionsJson := jsonutils.NewStringArray(regions)
-	s := auth.GetAdminSession(ctx, regions[0], "")
-	filters := jsonutils.NewDict()
-	filters.Add(jsonutils.NewInt(1000), "limit")
-	result, e := modules.Domains.List(s, filters)
-	if e != nil {
-		return nil, errors.Wrap(e, "list domain")
-	}
-	domains := jsonutils.NewArray()
-	for _, d := range result.Data {
-		dn, e := d.Get("name")
-		if e == nil {
-			if status, err := d.Bool("enabled"); err == nil && status {
-				domains.Add(dn)
-			}
-		}
-	}
+
 	resp := jsonutils.NewDict()
-	resp.Add(domains, "domains")
+	regionsJson := jsonutils.NewStringArray(regions)
 	resp.Add(regionsJson, "regions")
 
-	filters = jsonutils.NewDict()
-	filters.Add(jsonutils.NewStringArray([]string{"cas"}), "driver")
+	s := auth.GetAdminSession(ctx, regions[0], "")
+
+	if options.Options.ReturnFullDomainList {
+		filters := jsonutils.NewDict()
+		if len(currentDomain) > 0 {
+			filters.Add(jsonutils.NewString(currentDomain), "id")
+		}
+		filters.Add(jsonutils.NewInt(1000), "limit")
+		result, e := modules.Domains.List(s, filters)
+		if e != nil {
+			return nil, errors.Wrap(e, "list domain")
+		}
+		domains := jsonutils.NewArray()
+		for _, d := range result.Data {
+			dn, e := d.Get("name")
+			if e == nil {
+				if status, err := d.Bool("enabled"); err == nil && status {
+					domains.Add(dn)
+				}
+			}
+		}
+		resp.Add(domains, "domains")
+	}
+
+	filters := jsonutils.NewDict()
 	filters.Add(jsonutils.JSONTrue, "enabled")
+	if len(currentDomain) == 0 {
+		currentDomain = "all"
+	}
+	filters.Add(jsonutils.NewString(currentDomain), "sso_domain")
+	filters.Add(jsonutils.NewString("system"), "scope")
 	filters.Add(jsonutils.NewInt(1000), "limit")
+	if !createUser {
+		filters.Add(jsonutils.JSONFalse, "auto_create_user")
+	}
 	idps, err := modules.IdentityProviders.List(s, filters)
 	if err != nil {
 		return nil, errors.Wrap(err, "list idp")
 	}
 	retIdps := make([]jsonutils.JSONObject, 0)
 	for i := range idps.Data {
-		retIdp := jsonutils.NewDict()
-		id, _ := idps.Data[i].GetString("id")
-		name, _ := idps.Data[i].GetString("name")
-		driver, _ := idps.Data[i].GetString("driver")
-		retIdp.Add(jsonutils.NewString(id), "id")
-		retIdp.Add(jsonutils.NewString(name), "name")
-		retIdp.Add(jsonutils.NewString(driver), "driver")
-		conf, err := modules.IdentityProviders.GetSpecific(s, id, "config", nil)
-		if err != nil {
-			return nil, errors.Wrap(err, "idp get config spec")
-		}
-		retIdp.Update(conf)
+		retIdp := idps.Data[i].(*jsonutils.JSONDict).CopyIncludes("id", "name", "driver", "template", "icon_uri")
 		retIdps = append(retIdps, retIdp)
 	}
 
@@ -166,18 +188,16 @@ func (h *AuthHandlers) GetRegionsResponse(ctx context.Context, w http.ResponseWr
 func (h *AuthHandlers) getRegions(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 	resp, err := h.GetRegionsResponse(ctx, w, req)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 	appsrv.SendJSON(w, resp)
 }
 
 func (h *AuthHandlers) getUser(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	t := AppContextToken(ctx)
-	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
-	data, err := getUserInfo(ctx, s, t, req)
+	data, err := getUserInfo(ctx, req)
 	if err != nil {
-		httperrors.NotFoundError(w, err.Error())
+		httperrors.NotFoundError(ctx, w, err.Error())
 		return
 	}
 	body := jsonutils.NewDict()
@@ -186,75 +206,67 @@ func (h *AuthHandlers) getUser(ctx context.Context, w http.ResponseWriter, req *
 	appsrv.SendJSON(w, body)
 }
 
+func (h *AuthHandlers) initTotpSecrets(ctx context.Context, w http.ResponseWriter, req *http.Request) {
+	initTotpSecrets(ctx, w, req)
+}
+
 func (h *AuthHandlers) resetTotpSecrets(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	ResetTotpSecrets(ctx, w, req)
+	resetTotpSecrets(ctx, w, req)
 }
 
 func (h *AuthHandlers) validatePasscode(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	ValidatePasscodeHandler(ctx, w, req)
+	validatePasscodeHandler(ctx, w, req)
 }
 
 func (h *AuthHandlers) resetTotpRecoveryQuestions(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	ResetTotpRecoveryQuestions(ctx, w, req)
+	resetTotpRecoveryQuestions(ctx, w, req)
 }
 
 func (h *AuthHandlers) listTotpRecoveryQuestions(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	ListTotpRecoveryQuestions(ctx, w, req)
+	listTotpRecoveryQuestions(ctx, w, req)
 }
 
 // 返回 token及totp验证状态
-func doTenantLogin(ctx context.Context, w http.ResponseWriter, req *http.Request, body jsonutils.JSONObject) (mcclient.TokenCredential, bool) {
-	otpVerified := false
-	tenantId, e := body.GetString("tenantId")
-	if e != nil {
-		httperrors.InvalidInputError(w, "not found tenantId in body")
-		return nil, otpVerified
+func doTenantLogin(ctx context.Context, req *http.Request, body jsonutils.JSONObject) (mcclient.TokenCredential, *clientman.SAuthToken, error) {
+	tenantId, err := body.GetString("tenantId")
+	if err != nil {
+		return nil, nil, httperrors.NewInputParameterError("not found tenantId in body")
 	}
-	authTokenStr := getAuthToken(req)
-	if len(authTokenStr) == 0 {
-		httperrors.InvalidCredentialError(w, "not found auth token")
-		return nil, otpVerified
+	token, authToken, err := fetchAuthInfo(ctx, req)
+	if err != nil {
+		return nil, nil, errors.Wrapf(httperrors.ErrInvalidCredential, "fetchAuthToken fail %s", err)
 	}
-	token := clientman.TokenMan.Get(authTokenStr)
-	if token == nil || !token.IsValid() {
-		httperrors.InvalidCredentialError(w, "auth token %q is invalid", authTokenStr)
-		return nil, otpVerified
+	if !authToken.IsTotpVerified() {
+		return nil, nil, errors.Wrap(httperrors.ErrInvalidCredential, "TOTP authentication failed")
 	}
 
-	if isUserEnableTotp(ctx, req, token) {
-		totp := clientman.TokenMan.GetTotp(authTokenStr)
-		if !totp.IsVerified() {
-			httperrors.UnauthorizedError(w, "invalid totp token %q", authTokenStr)
-			return nil, otpVerified
-		} else {
-			otpVerified = true
-		}
+	ntoken, err := auth.Client().SetProject(tenantId, "", "", token)
+	if err != nil {
+		return nil, nil, httperrors.NewInvalidCredentialError("failed to change project")
 	}
 
-	token, e = auth.Client().SetProject(tenantId, "", "", token)
-	if e != nil {
-		httperrors.InvalidCredentialError(w, "failed to change project")
-		return nil, otpVerified
-	}
-	return token, otpVerified
+	authToken.SetToken(ntoken.GetTokenString())
+	return ntoken, authToken, nil
 }
 
-func isUserEnableTotp(ctx context.Context, req *http.Request, token mcclient.TokenCredential) bool {
-	if !options.Options.EnableTotp {
-		return false
-	}
+func fetchUserInfoFromToken(ctx context.Context, req *http.Request, token mcclient.TokenCredential) (jsonutils.JSONObject, error) {
 	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
-	usr, err := modules.UsersV3.Get(s, token.GetUserId(), nil)
+	info, err := modules.UsersV3.Get(s, token.GetUserId(), nil)
 	if err != nil {
-		return false
+		return nil, errors.Wrap(err, "UsersV3.Get")
 	}
-	return jsonutils.QueryBoolean(usr, "enable_mfa", true)
+	return info, nil
+}
+
+func isUserEnableTotp(userInfo jsonutils.JSONObject) bool {
+	return jsonutils.QueryBoolean(userInfo, "enable_mfa", false)
 }
 
 func (h *AuthHandlers) doCredentialLogin(ctx context.Context, req *http.Request, body jsonutils.JSONObject) (mcclient.TokenCredential, error) {
 	var token mcclient.TokenCredential
 	var err error
 	var tenant string
+	// log.Debugf("doCredentialLogin body: %s", body)
 	cliIp := netutils2.GetHttpRequestIp(req)
 	if body.Contains("username") {
 		uname, _ := body.GetString("username")
@@ -271,7 +283,7 @@ func (h *AuthHandlers) doCredentialLogin(ctx context.Context, req *http.Request,
 			return nil, httperrors.NewInputParameterError("get password in body")
 		}
 		// try base64 decryption
-		if decPasswd, err := base64.StdEncoding.DecodeString(passwd); err == nil {
+		if decPasswd, err := base64.StdEncoding.DecodeString(passwd); err == nil && stringutils2.IsPrintableAsciiString(string(decPasswd)) {
 			passwd = string(decPasswd)
 		}
 		if len(uname) == 0 || len(passwd) == 0 {
@@ -282,12 +294,11 @@ func (h *AuthHandlers) doCredentialLogin(ctx context.Context, req *http.Request,
 		// var token mcclient.TokenCredential
 		domain, _ := body.GetString("domain")
 		token, err = auth.Client().AuthenticateWeb(uname, passwd, domain, "", "", cliIp)
-	} else if body.Contains("cas_ticket") {
-		ticket, _ := body.GetString("cas_ticket")
-		if len(ticket) == 0 {
-			return nil, httperrors.NewInputParameterError("cas_ticket is empty")
+	} else if body.Contains("idp_driver") { // sso login
+		token, err = processSsoLoginData(body, cliIp)
+		if err != nil {
+			return nil, errors.Wrap(err, "processSsoLoginData")
 		}
-		token, err = auth.Client().AuthenticateCAS(ticket, "", "", "", cliIp)
 	} else {
 		return nil, httperrors.NewInputParameterError("missing credential")
 	}
@@ -298,7 +309,7 @@ func (h *AuthHandlers) doCredentialLogin(ctx context.Context, req *http.Request,
 				return nil, err
 			}
 		}
-		return nil, httperrors.NewInvalidCredentialError("username/password incorrect")
+		return nil, httperrors.NewInvalidCredentialError("invalid credential")
 	}
 	uname := token.GetUserName()
 	if len(tenant) > 0 {
@@ -387,18 +398,8 @@ func parseLoginUser(uname string) (string, string) {
 	return tenant, uname
 }
 
-func isUserAllowWebconsole(ctx context.Context, w http.ResponseWriter, req *http.Request, token mcclient.TokenCredential) bool {
-	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
-	usr, err := modules.UsersV3.Get(s, token.GetUserId(), nil)
-	if err != nil {
-		httperrors.GeneralServerError(w, err)
-		return false
-	}
-	if !jsonutils.QueryBoolean(usr, "allow_web_console", true) {
-		httperrors.ForbiddenError(w, "forbidden user %q login from web", usr.String())
-		return false
-	}
-	return true
+func isUserAllowWebconsole(userInfo jsonutils.JSONObject) bool {
+	return jsonutils.QueryBoolean(userInfo, "allow_web_console", true)
 }
 
 func saveCookie(w http.ResponseWriter, name, val, domain string, expire time.Time, base64 bool) {
@@ -422,6 +423,10 @@ func saveCookie(w http.ResponseWriter, name, val, domain string, expire time.Tim
 }
 
 func getCookie(r *http.Request, name string) string {
+	return getCookie2(r, name, true)
+}
+
+func getCookie2(r *http.Request, name string, base64 bool) string {
 	cookie, err := r.Cookie(name)
 	if err != nil {
 		log.Errorf("Cookie not found %q", name)
@@ -430,6 +435,9 @@ func getCookie(r *http.Request, name string) string {
 		//     fmt.Println("Cookie expired ", cookie.Expires, time.Now())
 		//     return ""
 	} else {
+		if !base64 {
+			return cookie.Value
+		}
 		val, err := Base64UrlDecode(cookie.Value)
 		if err != nil {
 			log.Errorf("Cookie %q fail to decode: %v", name, err)
@@ -448,60 +456,70 @@ func clearCookie(w http.ResponseWriter, name string, domain string) {
 	http.SetCookie(w, cookie)
 }
 
+func saveAuthCookie(w http.ResponseWriter, authToken *clientman.SAuthToken, token mcclient.TokenCredential) {
+	authCookie := authToken.GetAuthCookie(token)
+	saveCookie(w, constants.YUNION_AUTH_COOKIE, authCookie, options.Options.CookieDomain, token.GetExpires(), true)
+}
+
+func clearAuthCookie(w http.ResponseWriter) {
+	clearCookie(w, constants.YUNION_AUTH_COOKIE, options.Options.CookieDomain)
+}
+
 type PreLoginFunc func(ctx context.Context, req *http.Request, uname string, body jsonutils.JSONObject) error
 
 func (h *AuthHandlers) postLoginHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	body, e := appsrv.FetchJSON(req)
-	if e != nil {
-		httperrors.InvalidInputError(w, "fetch json for request: %v", e)
+	body, err := appsrv.FetchJSON(req)
+	if err != nil {
+		httperrors.InvalidInputError(ctx, w, "fetch json for request: %v", err)
 		return
 	}
+	err = h.doLogin(ctx, w, req, body)
+	if err != nil {
+		httperrors.GeneralServerError(ctx, w, err)
+		return
+	}
+	// normal
+	appsrv.Send(w, "")
+}
+
+func (h *AuthHandlers) doLogin(ctx context.Context, w http.ResponseWriter, req *http.Request, body jsonutils.JSONObject) error {
+	var err error
+	var authToken *clientman.SAuthToken
 	var token mcclient.TokenCredential
-	otpVerified := false
+	var userInfo jsonutils.JSONObject
 	if body.Contains("tenantId") { // switch project
-		token, otpVerified = doTenantLogin(ctx, w, req, body)
-	} else if body.Contains("username") || body.Contains("cas_ticket") {
-		// user/password authenticate
-		// cas authentication
-		token, e = h.doCredentialLogin(ctx, req, body)
-		if e != nil {
-			httperrors.GeneralServerError(w, e)
-			return
+		token, authToken, err = doTenantLogin(ctx, req, body)
+		if err != nil {
+			return errors.Wrap(err, "doTenantLogin")
+		}
+		userInfo, err = fetchUserInfoFromToken(ctx, req, token)
+		if err != nil {
+			return errors.Wrap(err, "fetchUserInfoFromToken")
 		}
 	} else {
-		httperrors.InvalidInputError(w, "no login credential")
-		return
-	}
-	if token == nil {
-		return
+		// user/password authenticate
+		// SSO authentication
+		token, err = h.doCredentialLogin(ctx, req, body)
+		if err != nil {
+			return errors.Wrap(err, "doCredentialLogin")
+		}
+		userInfo, err = fetchUserInfoFromToken(ctx, req, token)
+		if err != nil {
+			return errors.Wrap(err, "fetchUserInfoFromToken")
+		}
+		s := auth.GetAdminSession(ctx, FetchRegion(req), "")
+		isTotpInit, err := isUserTotpCredInitialed(s, token.GetUserId())
+		if err != nil {
+			return errors.Wrap(err, "isUserTotpCredInitialed")
+		}
+		authToken = clientman.NewAuthToken(token.GetTokenString(), isUserEnableTotp(userInfo), isTotpInit)
 	}
 
-	if !isUserAllowWebconsole(ctx, w, req, token) {
-		return
+	if !isUserAllowWebconsole(userInfo) {
+		return errors.Wrap(httperrors.ErrForbidden, "user forbidden login from web")
 	}
 
-	//if len(token.GetProjectId()) == 0 {
-	// no vaid project, return 403
-	//	httperrors.NoProjectError(w, "no valid project")
-	//	return
-	//}
-
-	tid := clientman.TokenMan.Save(token)
-
-	// 切换项目时，如果之前totp已经验证通过，自动放行
-	if otpVerified {
-		totp := clientman.TokenMan.GetTotp(tid)
-		totp.MarkVerified()
-		clientman.TokenMan.SaveTotp(tid)
-	}
-	// log.Debugf("auth %s token %s", tid, token)
-	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
-	authCookie, err := getUserAuthCookie(ctx, s, token, tid, req)
-	if err != nil {
-		httperrors.GeneralServerError(w, err)
-		return
-	}
-	saveCookie(w, constants.YUNION_AUTH_COOKIE, authCookie, options.Options.CookieDomain, token.GetExpires(), true)
+	saveAuthCookie(w, authToken, token)
 
 	if len(token.GetProjectId()) > 0 {
 		if body.Contains("isadmin") {
@@ -525,27 +543,11 @@ func (h *AuthHandlers) postLoginHandler(ctx context.Context, w http.ResponseWrit
 		saveCookie(w, "tenant", token.GetProjectId(), "", token.GetExpires(), false)
 	}
 
-	setAuthHeader(w, tid)
-
-	// 开启Totp的状态下，如果用户未设置
-	qrcode := ""
-	if isUserEnableTotp(ctx, req, token) {
-		qrcode, err = initializeUserTotpCred(s, token)
-		if err != nil {
-			httperrors.GeneralServerError(w, err)
-			return
-		}
-	}
-
-	appsrv.Send(w, qrcode)
+	return nil
 }
 
 func (h *AuthHandlers) postLogoutHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	tid := getAuthToken(req)
-	if len(tid) > 0 {
-		clientman.TokenMan.Remove(tid)
-	}
-	clearCookie(w, constants.YUNION_AUTH_COOKIE, options.Options.CookieDomain)
+	clearAuthCookie(w)
 	appsrv.Send(w, "")
 }
 
@@ -605,6 +607,7 @@ func (this *projectRoles) add(roleId, roleName string) {
 
 func (this *projectRoles) getToken(scope rbacutils.TRbacScope, user, userId, domain, domainId string, ip string) mcclient.TokenCredential {
 	return &mcclient.SSimpleToken{
+		Token:           "faketoken",
 		Domain:          domain,
 		DomainId:        domainId,
 		User:            user,
@@ -644,9 +647,9 @@ func (this *projectRoles) json(user, userId, domain, domainId string, ip string)
 	}
 	obj.Add(roles, "roles")
 	for _, scope := range []rbacutils.TRbacScope{
-		rbacutils.ScopeSystem,
-		rbacutils.ScopeDomain,
 		rbacutils.ScopeProject,
+		rbacutils.ScopeDomain,
+		rbacutils.ScopeSystem,
 	} {
 		token := this.getToken(scope, user, userId, domain, domainId, ip)
 		matches := policy.PolicyManager.MatchedPolicyNames(scope, token)
@@ -666,19 +669,6 @@ func (this *projectRoles) json(user, userId, domain, domainId string, ip string)
 		}
 	}
 	return obj
-}
-
-func getUserAuthCookie(ctx context.Context, s *mcclient.ClientSession, token mcclient.TokenCredential, sid string, req *http.Request) (string, error) {
-	// info, err := getUserInfo(s, token, req)
-	// if err != nil {
-	// 	return "", err
-	// }
-	info := jsonutils.NewDict()
-	info.Add(jsonutils.NewTimeString(token.GetExpires()), "exp")
-	info.Add(jsonutils.NewString(sid), "session")
-	info.Add(jsonutils.NewBool(isUserEnableTotp(ctx, req, token)), "totp_on") // 用户totp 开启状态。 True（已开启）|False(未开启)
-	info.Add(jsonutils.NewBool(options.Options.EnableTotp), "system_totp_on") // 全局totp 开启状态。 True（已开启）|False(未开启)
-	return info.String(), nil
 }
 
 func isLBAgentExists(s *mcclient.ClientSession) (bool, error) {
@@ -705,7 +695,24 @@ func isBaremetalAgentExists(s *mcclient.ClientSession) (bool, error) {
 	params.Add(jsonutils.JSONFalse, "details")
 	agents, err := modules.Baremetalagents.List(s, params)
 	if err != nil {
-		return false, errors.Wrap(err, "modules.LoadbalancerAgents.List")
+		return false, errors.Wrap(err, "modules.Baremetalagents.List")
+	}
+
+	if len(agents.Data) > 0 {
+		return true, nil
+	} else {
+		return false, nil
+	}
+}
+
+func isEsxiAgentExists(s *mcclient.ClientSession) (bool, error) {
+	params := jsonutils.NewDict()
+	params.Add(jsonutils.NewString("agent_type.equals(esxiagent)"), "filter.0")
+	params.Add(jsonutils.NewInt(1), "limit")
+	params.Add(jsonutils.JSONFalse, "details")
+	agents, err := modules.Baremetalagents.List(s, params)
+	if err != nil {
+		return false, errors.Wrap(err, "modules.Baremetalagents.List esxiagent")
 	}
 
 	if len(agents.Data) > 0 {
@@ -734,12 +741,18 @@ func isHostAgentExists(s *mcclient.ClientSession) (bool, error) {
 	}
 }
 
-func getUserInfo(ctx context.Context, s *mcclient.ClientSession, token mcclient.TokenCredential, req *http.Request) (*jsonutils.JSONDict, error) {
-	log.Infof("getUserInfo modules.UsersV3.Get")
+func getUserInfo(ctx context.Context, req *http.Request) (*jsonutils.JSONDict, error) {
+	token := AppContextToken(ctx)
+	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
+	/*log.Infof("getUserInfo modules.UsersV3.Get")
 	usr, err := modules.UsersV3.Get(s, token.GetUserId(), nil)
 	if err != nil {
 		log.Errorf("modules.UsersV3.Get fail %s", err)
 		return nil, fmt.Errorf("not found user %s", token.GetUserId())
+	}*/
+	usr, err := fetchUserInfoFromToken(ctx, req, token)
+	if err != nil {
+		return nil, errors.Wrapf(err, "fetchUserInfoFromToken %s", token.GetUserId())
 	}
 	data := jsonutils.NewDict()
 	for _, k := range []string{
@@ -747,8 +760,9 @@ func getUserInfo(ctx context.Context, s *mcclient.ClientSession, token mcclient.
 		"enabled", "mobile", "allow_web_console",
 		"created_at", "enable_mfa", "is_system_account",
 		"last_active_at", "last_login_ip",
-		"last_login_source", "idp_driver",
+		"last_login_source",
 		"password_expires_at", "failed_auth_count", "failed_auth_at",
+		"idps",
 	} {
 		v, e := usr.Get(k)
 		if e == nil {
@@ -848,6 +862,10 @@ func getUserInfo(ctx context.Context, s *mcclient.ClientSession, token mcclient.
 			existFunc: isHostAgentExists,
 			srvName:   "hostagent",
 		},
+		{
+			existFunc: isEsxiAgentExists,
+			srvName:   "esxiagent",
+		},
 	} {
 		exist, err := cf.existFunc(s)
 		if err != nil {
@@ -900,21 +918,9 @@ func getUserInfo(ctx context.Context, s *mcclient.ClientSession, token mcclient.
 		data.Add(jsonutils.JSONFalse, "non_default_domain_projects")
 	}
 
+	data.Add(jsonutils.NewString(getSsoCallbackUrl()), "sso_callback_url")
+
 	return data, nil
-}
-
-func getUserHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	t := AppContextToken(ctx)
-	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
-	data, err := getUserInfo(ctx, s, t, req)
-	if err != nil {
-		httperrors.NotFoundError(w, err.Error())
-		return
-	}
-	body := jsonutils.NewDict()
-	body.Add(data, "data")
-
-	appsrv.SendJSON(w, body)
 }
 
 func (h *AuthHandlers) getPermissionDetails(ctx context.Context, w http.ResponseWriter, req *http.Request) {
@@ -922,7 +928,7 @@ func (h *AuthHandlers) getPermissionDetails(ctx context.Context, w http.Response
 
 	_, query, body := appsrv.FetchEnv(ctx, w, req)
 	if body == nil {
-		httperrors.InvalidInputError(w, "body is empty")
+		httperrors.InvalidInputError(ctx, w, "body is empty")
 		return
 	}
 	var name string
@@ -931,7 +937,7 @@ func (h *AuthHandlers) getPermissionDetails(ctx context.Context, w http.Response
 	}
 	result, err := policy.ExplainRpc(ctx, t, body, name)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 
@@ -951,18 +957,18 @@ func (h *AuthHandlers) getResources(ctx context.Context, w http.ResponseWriter, 
 func (h *AuthHandlers) doCreatePolicies(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 	t := AppContextToken(ctx)
 	// if !utils.IsInStringArray("admin", t.GetRoles()) || t.GetProjectName() != "system" {
-	// 	httperrors.ForbiddenError(w, "not allow to create policy")
+	// 	httperrors.ForbiddenError(ctx, w, "not allow to create policy")
 	// 	return
 	// }
 	_, _, body := appsrv.FetchEnv(ctx, w, req)
 	if body == nil {
-		httperrors.InvalidInputError(w, "body is empty")
+		httperrors.InvalidInputError(ctx, w, "body is empty")
 		return
 	}
 	s := auth.GetSession(ctx, t, FetchRegion(req), "")
 	result, err := policytool.PolicyCreate(s, body)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 	appsrv.SendJSON(w, result)
@@ -971,18 +977,18 @@ func (h *AuthHandlers) doCreatePolicies(ctx context.Context, w http.ResponseWrit
 func (h *AuthHandlers) doPatchPolicy(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 	t := AppContextToken(ctx)
 	// if !utils.IsInStringArray("admin", t.GetRoles()) || t.GetProjectName() != "system" {
-	// 	httperrors.ForbiddenError(w, "not allow to create policy")
+	// 	httperrors.ForbiddenError(ctx, w, "not allow to create policy")
 	// 	return
 	// }
 	params, _, body := appsrv.FetchEnv(ctx, w, req)
 	if body == nil {
-		httperrors.InvalidInputError(w, "request body is empty")
+		httperrors.InvalidInputError(ctx, w, "request body is empty")
 		return
 	}
 	s := auth.GetSession(ctx, t, FetchRegion(req), "")
 	result, err := policytool.PolicyPatch(s, params["<policy_id>"], body)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 	appsrv.SendJSON(w, result)
@@ -991,7 +997,7 @@ func (h *AuthHandlers) doPatchPolicy(ctx context.Context, w http.ResponseWriter,
 func (h *AuthHandlers) doDeletePolicies(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 	t := AppContextToken(ctx)
 	// if !utils.IsInStringArray("admin", t.GetRoles()) || t.GetProjectName() != "system" {
-	// 	httperrors.ForbiddenError(w, "not allow to create policy")
+	// 	httperrors.ForbiddenError(ctx, w, "not allow to create policy")
 	// 	return
 	// }
 	_, query, _ := appsrv.FetchEnv(ctx, w, req)
@@ -999,7 +1005,7 @@ func (h *AuthHandlers) doDeletePolicies(ctx context.Context, w http.ResponseWrit
 
 	idlist, e := query.GetArray("id")
 	if e != nil || len(idlist) == 0 {
-		httperrors.InvalidInputError(w, "missing id")
+		httperrors.InvalidInputError(ctx, w, "missing id")
 		return
 	}
 	idStrList := jsonutils.JSONArray2StringArray(idlist)
@@ -1032,29 +1038,21 @@ func (h *AuthHandlers) doDeletePolicies(ctx context.Context, w http.ResponseWrit
 4.重置密码，清除认证token
 */
 func (h *AuthHandlers) resetUserPassword(ctx context.Context, w http.ResponseWriter, req *http.Request) {
-	ctx, err := SetAuthToken(ctx, w, req)
+	t, authToken, err := fetchAuthInfo(ctx, req)
 	if err != nil {
-		httperrors.InvalidCredentialError(w, "set auth token %v", err)
+		httperrors.InvalidCredentialError(ctx, w, "fetchAuthInfo fail: %s", err)
 		return
 	}
 
-	t := AppContextToken(ctx)
-	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
 	_, _, body := appsrv.FetchEnv(ctx, w, req)
 	if body == nil {
-		httperrors.InvalidInputError(w, "body is empty")
+		httperrors.InvalidInputError(ctx, w, "body is empty")
 		return
 	}
 
-	uid := t.GetUserId()
-	if len(uid) == 0 {
-		httperrors.ConflictError(w, "uid is empty")
-		return
-	}
-
-	user, err := modules.UsersV3.Get(s, uid, nil)
+	user, err := fetchUserInfoFromToken(ctx, req, t)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 
@@ -1064,13 +1062,13 @@ func (h *AuthHandlers) resetUserPassword(ctx context.Context, w http.ResponseWri
 	passcode, _ := body.GetString("passcode")
 
 	if newPwd != confirmPwd {
-		httperrors.InputParameterError(w, "new password mismatch")
+		httperrors.InputParameterError(ctx, w, "new password mismatch")
 		return
 	}
 
 	// 1.验证原密码正确，且idp_driver为空
-	if isLdapUser(user) {
-		httperrors.ForbiddenError(w, "not support reset user password")
+	if isIdpUser(user) {
+		httperrors.ForbiddenError(ctx, w, "not support reset user password")
 		return
 	}
 
@@ -1080,40 +1078,38 @@ func (h *AuthHandlers) resetUserPassword(ctx context.Context, w http.ResponseWri
 		switch httperr := err.(type) {
 		case *httputils.JSONClientError:
 			if httperr.Code == 409 {
-				httperrors.GeneralServerError(w, err)
+				httperrors.GeneralServerError(ctx, w, err)
 				return
 			}
 		}
-		httperrors.InputParameterError(w, "密码错误")
+		httperrors.InputParameterError(ctx, w, "密码错误")
 		return
 	}
 
+	s := auth.GetAdminSession(ctx, FetchRegion(req), "")
 	// 2.如果已开启MFA，验证 随机密码正确
-	tid := getAuthToken(req)
 	if isMfaEnabled(user) {
-		totp := clientman.TokenMan.GetTotp(tid)
-		err = totp.VerifyTotpPasscode(s, uid, passcode)
+		err = authToken.VerifyTotpPasscode(s, t.GetUserId(), passcode)
 		if err != nil {
-			httperrors.InputParameterError(w, "invalid passcode")
+			httperrors.InputParameterError(ctx, w, "invalid passcode")
 			return
 		}
 	}
 
-	// 3.重置密码，清除认证token
+	// 3.重置密码，
 	params := jsonutils.NewDict()
 	params.Set("password", jsonutils.NewString(newPwd))
-	ret, err := modules.UsersV3.Patch(s, uid, params)
+	_, err = modules.UsersV3.Patch(s, t.GetUserId(), params)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
-	} else {
-		clientman.TokenMan.Remove(tid)
 	}
 
-	appsrv.SendJSON(w, ret)
+	// 4. 清除认证token, logout
+	h.postLogoutHandler(ctx, w, req)
 }
 
-func isLdapUser(user jsonutils.JSONObject) bool {
+func isIdpUser(user jsonutils.JSONObject) bool {
 	if driver, _ := user.GetString("idp_driver"); len(driver) > 0 {
 		return true
 	}

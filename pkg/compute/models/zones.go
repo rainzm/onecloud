@@ -32,6 +32,7 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
@@ -139,7 +140,7 @@ func (zone *SZone) getStorageCount() (int, error) {
 }
 
 func (zone *SZone) getNetworkCount() (int, error) {
-	return getNetworkCount(nil, zone, "")
+	return getNetworkCount(nil, rbacutils.ScopeSystem, nil, zone)
 }
 
 func (manager *SZoneManager) FetchCustomizeColumns(
@@ -171,22 +172,16 @@ func (zone *SZone) GetExtraDetails(ctx context.Context, userCred mcclient.TokenC
 	return api.ZoneDetails{}, nil
 }
 
+func (zone *SZone) GetCloudproviderId() string {
+	return ""
+}
+
 func (zone *SZone) GetCloudRegionId() string {
 	if len(zone.CloudregionId) == 0 {
 		return "default"
 	} else {
 		return zone.CloudregionId
 	}
-}
-
-func (manager *SZoneManager) GetZonesByRegion(region *SCloudregion) ([]SZone, error) {
-	zones := make([]SZone, 0)
-	q := manager.Query().Equals("cloudregion_id", region.Id)
-	err := db.FetchModelObjects(manager, q, &zones)
-	if err != nil {
-		return nil, err
-	}
-	return zones, nil
 }
 
 func (manager *SZoneManager) SyncZones(ctx context.Context, userCred mcclient.TokenCredential, region *SCloudregion, zones []cloudprovider.ICloudZone) ([]SZone, []cloudprovider.ICloudZone, compare.SyncResult) {
@@ -197,7 +192,7 @@ func (manager *SZoneManager) SyncZones(ctx context.Context, userCred mcclient.To
 	remoteZones := make([]cloudprovider.ICloudZone, 0)
 	syncResult := compare.SyncResult{}
 
-	dbZones, err := manager.GetZonesByRegion(region)
+	dbZones, err := region.GetZones()
 	if err != nil {
 		syncResult.Error(err)
 		return nil, nil, syncResult
@@ -296,7 +291,7 @@ func (manager *SZoneManager) newFromCloudZone(ctx context.Context, userCred mccl
 
 	zone.CloudregionId = region.Id
 
-	err = manager.TableSpec().Insert(&zone)
+	err = manager.TableSpec().Insert(ctx, &zone)
 	if err != nil {
 		log.Errorf("newFromCloudZone fail %s", err)
 		return nil, err
@@ -571,14 +566,14 @@ func (manager *SZoneManager) ListItemFilter(
 		}
 	}
 
-	managerStr := query.Cloudprovider
+	managerStr := query.CloudproviderId
 	if len(managerStr) > 0 {
-		subq := CloudproviderRegionManager.QueryRelatedRegionIds("", managerStr)
+		subq := CloudproviderRegionManager.QueryRelatedRegionIds(nil, managerStr)
 		q = q.In("cloudregion_id", subq)
 	}
-	accountStr := query.Cloudaccount
-	if len(accountStr) > 0 {
-		subq := CloudproviderRegionManager.QueryRelatedRegionIds(accountStr)
+	accountArr := query.CloudaccountId
+	if len(accountArr) > 0 {
+		subq := CloudproviderRegionManager.QueryRelatedRegionIds(accountArr)
 		q = q.In("cloudregion_id", subq)
 	}
 

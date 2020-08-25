@@ -52,6 +52,18 @@ func (self *SHuaweiProviderFactory) GetMaxCloudEventKeepDays() int {
 	return 7
 }
 
+func (self *SHuaweiProviderFactory) IsSupportCloudIdService() bool {
+	return true
+}
+
+func (self *SHuaweiProviderFactory) IsSupportClouduserPolicy() bool {
+	return false
+}
+
+func (self *SHuaweiProviderFactory) IsSupportCreateCloudgroup() bool {
+	return true
+}
+
 func (self *SHuaweiProviderFactory) ValidateCreateCloudaccountData(ctx context.Context, userCred mcclient.TokenCredential, input cloudprovider.SCloudaccountCredential) (cloudprovider.SCloudaccount, error) {
 	output := cloudprovider.SCloudaccount{}
 	if len(input.AccessKeyId) == 0 {
@@ -176,6 +188,10 @@ func (self *SHuaweiProvider) GetAccountId() string {
 	return self.client.GetAccountId()
 }
 
+func (self *SHuaweiProvider) GetIamLoginUrl() string {
+	return self.client.GetIamLoginUrl()
+}
+
 func (self *SHuaweiProvider) GetCloudRegionExternalIdPrefix() string {
 	return self.client.GetCloudRegionExternalIdPrefix()
 }
@@ -184,12 +200,74 @@ func (self *SHuaweiProvider) GetIProjects() ([]cloudprovider.ICloudProject, erro
 	return self.client.GetIProjects()
 }
 
+func (self *SHuaweiProvider) CreateIProject(name string) (cloudprovider.ICloudProject, error) {
+	return self.client.CreateIProject(name)
+}
+
 func (self *SHuaweiProvider) GetStorageClasses(regionId string) []string {
 	return []string{
 		"STANDARD", "WARM", "COLD",
 	}
 }
 
+func (self *SHuaweiProvider) GetBucketCannedAcls(regionId string) []string {
+	return []string{
+		string(cloudprovider.ACLPrivate),
+		string(cloudprovider.ACLAuthRead),
+		string(cloudprovider.ACLPublicRead),
+		string(cloudprovider.ACLPublicReadWrite),
+	}
+}
+
+func (self *SHuaweiProvider) GetObjectCannedAcls(regionId string) []string {
+	return []string{
+		string(cloudprovider.ACLPrivate),
+		string(cloudprovider.ACLAuthRead),
+		string(cloudprovider.ACLPublicRead),
+		string(cloudprovider.ACLPublicReadWrite),
+	}
+}
+
 func (self *SHuaweiProvider) GetCapabilities() []string {
 	return self.client.GetCapabilities()
+}
+
+func (self *SHuaweiProvider) CreateIClouduser(conf *cloudprovider.SClouduserCreateConfig) (cloudprovider.IClouduser, error) {
+	return self.client.CreateIClouduser(conf)
+}
+
+func (self *SHuaweiProvider) GetICloudusers() ([]cloudprovider.IClouduser, error) {
+	return self.client.GetICloudusers()
+}
+
+func (self *SHuaweiProvider) GetICloudgroups() ([]cloudprovider.ICloudgroup, error) {
+	return self.client.GetICloudgroups()
+}
+
+func (self *SHuaweiProvider) GetICloudgroupByName(name string) (cloudprovider.ICloudgroup, error) {
+	return self.client.GetICloudgroupByName(name)
+}
+
+func (self *SHuaweiProvider) CreateICloudgroup(name, desc string) (cloudprovider.ICloudgroup, error) {
+	return self.client.CreateICloudgroup(name, desc)
+}
+
+func (self *SHuaweiProvider) GetISystemCloudpolicies() ([]cloudprovider.ICloudpolicy, error) {
+	return self.client.GetISystemCloudpolicies()
+}
+
+func (self *SHuaweiProvider) GetICustomCloudpolicies() ([]cloudprovider.ICloudpolicy, error) {
+	return []cloudprovider.ICloudpolicy{}, nil
+}
+
+func (self *SHuaweiProvider) GetIClouduserByName(name string) (cloudprovider.IClouduser, error) {
+	return self.client.GetIClouduserByName(name)
+}
+
+func (self *SHuaweiProvider) GetSamlEntityId() string {
+	return cloudprovider.SAML_ENTITY_ID_HUAWEI_CLOUD
+}
+
+func (self *SHuaweiProvider) GetSamlSpInitiatedLoginUrl(idpName string) string {
+	return self.client.GetSamlSpInitiatedLoginUrl(idpName)
 }

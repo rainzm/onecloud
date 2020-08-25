@@ -29,11 +29,12 @@ func init() {
 	type StorageListOptions struct {
 		options.BaseListOptions
 
-		Share  *bool  `help:"Share storage list"`
-		Local  *bool  `help:"Local storage list"`
-		Usable *bool  `help:"Usable storage list"`
-		Zone   string `help:"List storages in zone" json:"-"`
-		Region string `help:"List storages in region"`
+		Share    *bool  `help:"Share storage list"`
+		Local    *bool  `help:"Local storage list"`
+		Usable   *bool  `help:"Usable storage list"`
+		Zone     string `help:"List storages in zone" json:"-"`
+		Region   string `help:"List storages in region"`
+		Schedtag string `help:"filter storage by schedtag"`
 	}
 	R(&StorageListOptions{}, "storage-list", "List storages", func(s *mcclient.ClientSession, opts *StorageListOptions) error {
 		params, err := options.ListStructToParams(opts)
@@ -230,6 +231,20 @@ func init() {
 			return err
 		}
 		printObject(ret)
+		return nil
+	})
+
+	type StorageForceDetachHost struct {
+		ID   string `help:"ID or name of storage" json:"-"`
+		Host string `help:"ID or name of host"`
+	}
+	R(&StorageForceDetachHost{}, "storage-public", "Force detach host", func(s *mcclient.ClientSession, args *StorageForceDetachHost) error {
+		params := jsonutils.Marshal(args)
+		result, err := modules.Storages.PerformAction(s, args.ID, "force-detach-host", params)
+		if err != nil {
+			return err
+		}
+		printObject(result)
 		return nil
 	})
 

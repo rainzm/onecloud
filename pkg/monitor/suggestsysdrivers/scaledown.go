@@ -1,79 +1,34 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package suggestsysdrivers
 
 import (
-	"context"
-	"fmt"
-	"strings"
-
-	"yunion.io/x/jsonutils"
-	"yunion.io/x/log"
-	"yunion.io/x/pkg/errors"
-	"yunion.io/x/pkg/utils"
-
 	"yunion.io/x/onecloud/pkg/apis/monitor"
-	"yunion.io/x/onecloud/pkg/httperrors"
-	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/mcclient/auth"
-	"yunion.io/x/onecloud/pkg/mcclient/modules"
-	"yunion.io/x/onecloud/pkg/monitor/alerting"
 	"yunion.io/x/onecloud/pkg/monitor/models"
-	"yunion.io/x/onecloud/pkg/monitor/validators"
 )
 
 type ScaleDown struct {
-	monitor.ScaleRule
+	*InfluxdbBaseDriver
 }
 
 func NewScaleDownDriver() models.ISuggestSysRuleDriver {
 	return &ScaleDown{
-		ScaleRule: []monitor.Scale{},
+		InfluxdbBaseDriver: NewInfluxdbBaseDriver(monitor.SCALE_DOWN, monitor.SCALE_MONTITOR_RES_TYPE,
+			monitor.SCALE_DOWN_DRIVER_ACTION, monitor.SCALE_DOWN_MONITOR_SUGGEST),
 	}
-}
-
-func (_ *ScaleDown) GetType() string {
-	return monitor.SCALE_DOWN
-
-}
-
-func (rule *ScaleDown) GetResourceType() string {
-	return string(monitor.SCALE_MONTITOR_RES_TYPE)
-}
-
-func (rule *ScaleDown) ValidateSetting(input *monitor.SSuggestSysAlertSetting) error {
-	if input.ScaleRule == nil {
-		return httperrors.NewInputParameterError("no found rule setting ")
-	}
-	if len(*input.ScaleRule) == 0 {
-		return httperrors.NewInputParameterError("no found customize monitor rule")
-	}
-	for _, scale := range *input.ScaleRule {
-		if scale.Database == "" {
-			return httperrors.NewInputParameterError("database is missing")
-		}
-		if scale.Measurement == "" {
-			return httperrors.NewInputParameterError("measurement is missing")
-		}
-		if scale.Field == "" {
-			return httperrors.NewInputParameterError("field is missing")
-		}
-		if !utils.IsInStringArray(getQueryEvalType(scale), validators.EvaluatorDefaultTypes) {
-			return httperrors.NewInputParameterError("the evalType is illegal")
-		}
-		if scale.Threshold == 0 {
-			return httperrors.NewInputParameterError("threshold is meaningless")
-		}
-	}
-	return nil
-}
-
-func getQueryEvalType(scale monitor.Scale) string {
-	typ := ""
-	switch scale.EvalType {
-	case ">=", ">":
-		typ = "gt"
-	case "<=", "<":
-		typ = "lt"
-	}
+<<<<<<< HEAD
 	return typ
 }
 
@@ -317,4 +272,6 @@ func (rule *ScaleDown) StartResolveTask(ctx context.Context, userCred mcclient.T
 func (rule *ScaleDown) Resolve(data *models.SSuggestSysAlert) error {
 	log.Println("scaleDown Resolve do nothing")
 	return nil
+=======
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 }

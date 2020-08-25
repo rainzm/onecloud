@@ -25,10 +25,12 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
+	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/cloudcommon/consts"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/quotas"
@@ -78,13 +80,10 @@ type SVpc struct {
 
 	// CIDR地址段
 	// example: 192.168.222.0/24
-	CidrBlock string `charset:"ascii" nullable:"true" list:"domain" create:"domain_required"`
+	CidrBlock string `charset:"ascii" nullable:"true" list:"domain" create:"domain_optional"`
 
-	// 区域Id
-	// CloudregionId string `width:"36" charset:"ascii" nullable:"false" list:"domain" create:"domain_required" default:"default"`
-
-	// 全局VPC Id
-	// GlobalvpcId string `width:"36" charset:"ascii" list:"user" json:"globalvpc_id"`
+	// Vpc外网访问模式
+	ExternalAccessMode string `width:"16" charset:"ascii" nullable:"true" list:"user" update:"user" create:"optional"`
 }
 
 func (manager *SVpcManager) GetContextManagers() [][]db.IModelManager {
@@ -125,6 +124,19 @@ func (self *SVpc) GetNatgateways() ([]SNatGateway, error) {
 		return nil, err
 	}
 	return nats, nil
+}
+
+func (self *SVpc) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.VpcUpdateInput) (api.VpcUpdateInput, error) {
+	if input.ExternalAccessMode != "" {
+		if !utils.IsInStringArray(input.ExternalAccessMode, api.VPC_EXTERNAL_ACCESS_MODES) {
+			return input, httperrors.NewInputParameterError("invalid external_access_mode %q, want %s",
+				input.ExternalAccessMode, api.VPC_EXTERNAL_ACCESS_MODES)
+		}
+	}
+	if _, err := self.SEnabledStatusInfrasResourceBase.ValidateUpdateData(ctx, userCred, query, input.EnabledStatusInfrasResourceBaseUpdateInput); err != nil {
+		return input, err
+	}
+	return input, nil
 }
 
 func (self *SVpc) ValidateDeleteCondition(ctx context.Context) error {
@@ -179,11 +191,11 @@ func (manager *SVpcManager) getVpcExternalIdForClassicNetwork(regionId, cloudpro
 	return fmt.Sprintf("%s-%s", regionId, cloudproviderId)
 }
 
-func (manager *SVpcManager) GetOrCreateVpcForClassicNetwork(host *SHost) (*SVpc, error) {
-	region := host.GetRegion()
-	cloudprovider := host.GetCloudprovider()
+func (manager *SVpcManager) GetOrCreateVpcForClassicNetwork(ctx context.Context, cloudprovider *SCloudprovider, region *SCloudregion) (*SVpc, error) {
 	externalId := manager.getVpcExternalIdForClassicNetwork(region.Id, cloudprovider.Id)
-	_vpc, err := db.FetchByExternalId(manager, externalId)
+	_vpc, err := db.FetchByExternalIdAndManagerId(manager, externalId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+		return q.Equals("manager_id", region.ManagerId)
+	})
 	if err == nil {
 		return _vpc.(*SVpc), nil
 	}
@@ -199,8 +211,8 @@ func (manager *SVpcManager) GetOrCreateVpcForClassicNetwork(host *SHost) (*SVpc,
 	vpc.SetEnabled(false)
 	vpc.Status = api.VPC_STATUS_UNAVAILABLE
 	vpc.ExternalId = externalId
-	vpc.ManagerId = host.ManagerId
-	err = manager.TableSpec().Insert(vpc)
+	vpc.ManagerId = region.ManagerId
+	err = manager.TableSpec().Insert(ctx, vpc)
 	if err != nil {
 		return nil, errors.Wrap(err, "Insert vpc for classic network")
 	}
@@ -212,6 +224,16 @@ func (self *SVpc) getNetworkQuery() *sqlchemy.SQuery {
 	wireQ := self.getWireQuery().SubQuery()
 	q = q.In("wire_id", wireQ.Query(wireQ.Field("id")).SubQuery())
 	return q
+}
+
+func (self *SVpc) GetNetworks() ([]SNetwork, error) {
+	q := self.getNetworkQuery()
+	nets := make([]SNetwork, 0, 5)
+	err := db.FetchModelObjects(NetworkManager, q, &nets)
+	if err != nil {
+		return nil, errors.Wrap(err, "db.FetchModelObjects")
+	}
+	return nets, nil
 }
 
 func (self *SVpc) GetNetworkCount() (int, error) {
@@ -310,19 +332,6 @@ func (manager *SVpcManager) FetchCustomizeColumns(
 	return rows
 }
 
-func (manager *SVpcManager) getVpcsByRegion(region *SCloudregion, provider *SCloudprovider) ([]SVpc, error) {
-	vpcs := make([]SVpc, 0)
-	q := manager.Query().Equals("cloudregion_id", region.Id)
-	if provider != nil {
-		q = q.Equals("manager_id", provider.Id)
-	}
-	err := db.FetchModelObjects(manager, q, &vpcs)
-	if err != nil {
-		return nil, err
-	}
-	return vpcs, nil
-}
-
 func (self *SVpc) setDefault(def bool) error {
 	var err error
 	if self.IsDefault != def {
@@ -342,7 +351,7 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 	remoteVPCs := make([]cloudprovider.ICloudVpc, 0)
 	syncResult := compare.SyncResult{}
 
-	dbVPCs, err := manager.getVpcsByRegion(region, provider)
+	dbVPCs, err := region.GetCloudproviderVpcs(provider.Id)
 	if err != nil {
 		syncResult.Error(err)
 		return nil, nil, syncResult
@@ -384,7 +393,7 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 		localVPCs = append(localVPCs, commondb[i])
 		remoteVPCs = append(remoteVPCs, commonext[i])
 		syncResult.Update()
-		err = commondb[i].SyncGlobalVpc(ctx, userCred, provider.GetOwnerId())
+		err = commondb[i].SyncGlobalVpc(ctx, userCred, provider.GetOwnerId(), provider)
 		if err != nil {
 			log.Errorf("%s(%s) sync global vpc error: %v", commondb[i].Name, commondb[i].Id, err)
 		}
@@ -399,7 +408,7 @@ func (manager *SVpcManager) SyncVPCs(ctx context.Context, userCred mcclient.Toke
 		localVPCs = append(localVPCs, *newVpc)
 		remoteVPCs = append(remoteVPCs, added[i])
 		syncResult.Add()
-		err = newVpc.SyncGlobalVpc(ctx, userCred, provider.GetOwnerId())
+		err = newVpc.SyncGlobalVpc(ctx, userCred, provider.GetOwnerId(), provider)
 		if err != nil {
 			log.Errorf("%s(%s) sync global vpc error: %v", newVpc.Name, newVpc.Id, err)
 		}
@@ -429,10 +438,11 @@ func (self *SVpc) syncRemoveCloudVpc(ctx context.Context, userCred mcclient.Toke
 	return err
 }
 
-func (self *SVpc) SyncGlobalVpc(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider) error {
+func (self *SVpc) SyncGlobalVpc(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, provider *SCloudprovider) error {
 	if len(self.GlobalvpcId) > 0 {
 		gv, _ := self.GetGlobalVpc()
 		SyncCloudDomain(userCred, gv, ownerId)
+		gv.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 		return nil
 	}
 	region, err := self.GetRegion()
@@ -471,11 +481,12 @@ func (self *SVpc) SyncGlobalVpc(ctx context.Context, userCred mcclient.TokenCred
 			gv.SetEnabled(true)
 			gv.Status = api.GLOBAL_VPC_STATUS_AVAILABLE
 			gv.SetModelManager(GlobalVpcManager, gv)
-			err = GlobalVpcManager.TableSpec().Insert(gv)
+			err = GlobalVpcManager.TableSpec().Insert(ctx, gv)
 			if err != nil {
 				return errors.Wrap(err, "GlobalVpcManager.Insert")
 			}
 			SyncCloudDomain(userCred, gv, ownerId)
+			gv.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 			globalvpcId = gv.Id
 		}
 		_, err = db.Update(self, func() error {
@@ -532,7 +543,7 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 
 	vpc.IsEmulated = extVPC.IsEmulated()
 
-	err = manager.TableSpec().Insert(&vpc)
+	err = manager.TableSpec().Insert(ctx, &vpc)
 	if err != nil {
 		log.Errorf("newFromCloudVpc fail %s", err)
 		return nil, err
@@ -561,8 +572,7 @@ func (self *SVpc) markAllNetworksUnknown(userCred mcclient.TokenCredential) erro
 }
 
 func (manager *SVpcManager) InitializeData() error {
-	vpcObj, err := manager.FetchById(api.DEFAULT_VPC_ID)
-	if err != nil {
+	if vpcObj, err := manager.FetchById(api.DEFAULT_VPC_ID); err != nil {
 		if err == sql.ErrNoRows {
 			defVpc := SVpc{}
 			defVpc.SetModelManager(VpcManager, &defVpc)
@@ -575,7 +585,7 @@ func (manager *SVpcManager) InitializeData() error {
 			defVpc.IsDefault = true
 			defVpc.IsPublic = true
 			defVpc.PublicScope = string(rbacutils.ScopeSystem)
-			err = manager.TableSpec().Insert(&defVpc)
+			err = manager.TableSpec().Insert(context.TODO(), &defVpc)
 			if err != nil {
 				log.Errorf("Insert default vpc fail: %s", err)
 			}
@@ -594,6 +604,27 @@ func (manager *SVpcManager) InitializeData() error {
 			return err
 		}
 	}
+
+	{ // initialize default external_access_mode for onecloud vpc
+		var vpcs []SVpc
+		q := manager.Query().
+			IsNullOrEmpty("manager_id").
+			IsNullOrEmpty("external_id").
+			IsNullOrEmpty("external_access_mode")
+		if err := db.FetchModelObjects(manager, q, &vpcs); err != nil {
+			return errors.Wrap(err, "fetch onecloud vpc with external_access_mode not set")
+		}
+		for i := range vpcs {
+			vpc := &vpcs[i]
+			if _, err := db.Update(vpc, func() error {
+				vpc.ExternalAccessMode = api.VPC_EXTERNAL_ACCESS_MODE_EIP_DISTGW
+				return nil
+			}); err != nil {
+				return errors.Wrap(err, "db set default external_access_mode")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -604,7 +635,7 @@ func (manager *SVpcManager) ValidateCreateData(
 	query jsonutils.JSONObject,
 	input api.VpcCreateInput,
 ) (api.VpcCreateInput, error) {
-	regionId := input.Cloudregion
+	regionId := input.CloudregionId
 	if len(regionId) == 0 {
 		return input, httperrors.NewMissingParameterError("cloudregion_id")
 	}
@@ -617,10 +648,10 @@ func (manager *SVpcManager) ValidateCreateData(
 		}
 	}
 	region := regionObj.(*SCloudregion)
-	input.Cloudregion = region.Id
+	input.CloudregionId = region.Id
 	// data.Add(jsonutils.NewString(region.GetId()), "cloudregion_id")
 	if region.isManaged() {
-		managerStr := input.Cloudprovider
+		managerStr := input.CloudproviderId
 		if len(managerStr) == 0 {
 			return input, httperrors.NewMissingParameterError("manager_id")
 		}
@@ -632,11 +663,17 @@ func (manager *SVpcManager) ValidateCreateData(
 				return input, httperrors.NewGeneralError(err)
 			}
 		}
-		input.Cloudprovider = managerObj.GetId()
+		input.CloudproviderId = managerObj.GetId()
 		// data.Add(jsonutils.NewString(managerObj.GetId()), "manager_id")
 	} else {
-		// data.Set("status", jsonutils.NewString(api.VPC_STATUS_AVAILABLE))
 		input.Status = api.VPC_STATUS_AVAILABLE
+		if input.ExternalAccessMode == "" {
+			input.ExternalAccessMode = api.VPC_EXTERNAL_ACCESS_MODE_EIP_DISTGW
+		}
+		if !utils.IsInStringArray(input.ExternalAccessMode, api.VPC_EXTERNAL_ACCESS_MODES) {
+			return input, httperrors.NewInputParameterError("invalid external_access_mode %q, want %s",
+				input.Status, api.VPC_EXTERNAL_ACCESS_MODES)
+		}
 	}
 
 	cidrBlock := input.CidrBlock
@@ -658,6 +695,10 @@ func (manager *SVpcManager) ValidateCreateData(
 	input, err = region.GetDriver().ValidateCreateVpcData(ctx, userCred, input)
 	if err != nil {
 		return input, errors.Wrapf(err, "region.GetDriver().ValidateCreateVpcData")
+	}
+
+	if region.GetDriver().IsVpcCreateNeedInputCidr() && len(input.CidrBlock) == 0 {
+		return input, httperrors.NewMissingParameterError("cidr")
 	}
 
 	keys := GetVpcQuotaKeysFromCreateInput(input)
@@ -697,7 +738,7 @@ func (self *SVpc) PostCreate(ctx context.Context, userCred mcclient.TokenCredent
 func (self *SVpc) GetIRegion() (cloudprovider.ICloudRegion, error) {
 	region, err := self.GetRegion()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "GetRegion")
 	}
 	provider, err := self.GetDriver()
 	if err != nil {
@@ -1021,8 +1062,13 @@ func (self *SVpc) initWire(ctx context.Context, zone *SZone) (*SWire, error) {
 	wire.ZoneId = zone.Id
 	wire.IsEmulated = true
 	wire.Name = fmt.Sprintf("vpc-%s", self.Name)
+
+	wire.DomainId = self.DomainId
+	wire.IsPublic = self.IsPublic
+	wire.PublicScope = self.PublicScope
+
 	wire.SetModelManager(WireManager, wire)
-	err := WireManager.TableSpec().Insert(wire)
+	err := WireManager.TableSpec().Insert(ctx, wire)
 	if err != nil {
 		return nil, err
 	}
@@ -1030,14 +1076,14 @@ func (self *SVpc) initWire(ctx context.Context, zone *SZone) (*SWire, error) {
 }
 
 func GetVpcQuotaKeysFromCreateInput(input api.VpcCreateInput) quotas.SDomainRegionalCloudResourceKeys {
-	ownerId := &db.SOwnerId{DomainId: input.ProjectDomain}
+	ownerId := &db.SOwnerId{DomainId: input.ProjectDomainId}
 	var region *SCloudregion
-	if len(input.Cloudregion) > 0 {
-		region = CloudregionManager.FetchRegionById(input.Cloudregion)
+	if len(input.CloudregionId) > 0 {
+		region = CloudregionManager.FetchRegionById(input.CloudregionId)
 	}
 	var provider *SCloudprovider
-	if len(input.Cloudprovider) > 0 {
-		provider = CloudproviderManager.FetchCloudproviderById(input.Cloudprovider)
+	if len(input.CloudproviderId) > 0 {
+		provider = CloudproviderManager.FetchCloudproviderById(input.CloudproviderId)
 	}
 	regionKeys := fetchRegionalQuotaKeys(rbacutils.ScopeDomain, ownerId, region, provider)
 	keys := quotas.SDomainRegionalCloudResourceKeys{}
@@ -1085,7 +1131,7 @@ func (manager *SVpcManager) totalCount(
 		q = q.Equals("domain_id", ownerId.GetProjectDomainId())
 	}
 	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
-	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"))
+	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 
 	cnt, _ := q.CountWithError()
 
@@ -1102,6 +1148,15 @@ func (vpc *SVpc) GetChangeOwnerCandidateDomainIds() []string {
 	}
 	log.Debugf("Candidate: %s", candidates)
 	return db.ISharableMergeChangeOwnerCandidateDomainIds(vpc, candidates...)
+}
+
+func (vpc *SVpc) GetChangeOwnerRequiredDomainIds() []string {
+	requires := stringutils2.SSortedStrings{}
+	wires := vpc.GetWires()
+	for i := range wires {
+		requires = stringutils2.Append(requires, wires[i].DomainId)
+	}
+	return requires
 }
 
 func (vpc *SVpc) GetRequiredSharedDomainIds() []string {
@@ -1163,4 +1218,101 @@ func (manager *SVpcManager) ListItemExportKeys(ctx context.Context,
 	}
 
 	return q, nil
+}
+
+func (vpc *SVpc) PerformPublic(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPublicDomainInput) (jsonutils.JSONObject, error) {
+	if vpc.Id == api.DEFAULT_VPC_ID && rbacutils.String2ScopeDefault(input.Scope, rbacutils.ScopeSystem) != rbacutils.ScopeSystem {
+		return nil, httperrors.NewForbiddenError("For default vpc, only system level sharing can be set")
+	}
+	_, err := vpc.SEnabledStatusInfrasResourceBase.PerformPublic(ctx, userCred, query, input)
+	if err != nil {
+		return nil, errors.Wrap(err, "SEnabledStatusInfrasResourceBase.PerformPublic")
+	}
+	// perform public for all emulated wires
+	wires := vpc.GetWires()
+	for i := range wires {
+		if wires[i].IsEmulated {
+			_, err := wires[i].PerformPublic(ctx, userCred, query, input)
+			if err != nil {
+				return nil, errors.Wrap(err, "wire.PerformPublic")
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (vpc *SVpc) PerformPrivate(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformPrivateInput) (jsonutils.JSONObject, error) {
+	if vpc.Id == "default" {
+		return nil, httperrors.NewForbiddenError("Prohibit making default vpc private")
+	}
+	// perform private for all emulated wires
+	emptyNets := true
+	wires := vpc.GetWires()
+	for i := range wires {
+		if wires[i].DomainId == vpc.DomainId {
+			nets, _ := wires[i].getNetworks(nil, rbacutils.ScopeNone)
+			for j := range nets {
+				if nets[j].DomainId != vpc.DomainId {
+					emptyNets = false
+					break
+				}
+			}
+			if !emptyNets {
+				break
+			}
+		} else {
+			emptyNets = false
+			break
+		}
+	}
+	if emptyNets {
+		for i := range wires {
+			nets, _ := wires[i].getNetworks(nil, rbacutils.ScopeNone)
+			netfail := false
+			for j := range nets {
+				if nets[j].IsPublic && nets[j].GetPublicScope().HigherEqual(rbacutils.ScopeDomain) {
+					var err error
+					if consts.GetNonDefaultDomainProjects() {
+						netinput := apis.PerformPublicProjectInput{}
+						netinput.Scope = string(rbacutils.ScopeDomain)
+						_, err = nets[j].PerformPublic(ctx, userCred, nil, netinput)
+					} else {
+						_, err = nets[j].PerformPrivate(ctx, userCred, nil, input)
+					}
+					if err != nil {
+						log.Errorf("nets[j].PerformPublic fail %s", err)
+						netfail = true
+						break
+					}
+				}
+			}
+			if netfail {
+				break
+			}
+			_, err := wires[i].PerformPrivate(ctx, userCred, query, input)
+			if err != nil {
+				log.Errorf("wires[i].PerformPrivate fail %s", err)
+				break
+			}
+		}
+	}
+	return vpc.SEnabledStatusInfrasResourceBase.PerformPrivate(ctx, userCred, query, input)
+}
+
+func (vpc *SVpc) PerformChangeOwner(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input apis.PerformChangeDomainOwnerInput) (jsonutils.JSONObject, error) {
+	_, err := vpc.SEnabledStatusInfrasResourceBase.PerformChangeOwner(ctx, userCred, query, input)
+	if err != nil {
+		return nil, errors.Wrap(err, "SEnabledStatusInfrasResourceBase.PerformChangeOwner")
+	}
+	wires := vpc.GetWires()
+	for i := range wires {
+		if wires[i].IsEmulated {
+			_, err := wires[i].PerformChangeOwner(ctx, userCred, query, input)
+			if err != nil {
+				return nil, errors.Wrap(err, "wires[i].PerformChangeOwner")
+			}
+		}
+	}
+
+	return nil, nil
 }

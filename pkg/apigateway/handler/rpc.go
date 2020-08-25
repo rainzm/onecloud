@@ -41,16 +41,16 @@ func NewRPCHandlers(prefix string) *RPCHandlers {
 }
 
 func (h *RPCHandlers) AddGet(mf appsrv.MiddlewareFunc) *RPCHandlers {
-	h.AddByMethod(GET, mf, NewHP(rpcHandler, APIVer, "rpc"))
+	h.AddByMethod(GET, mf, NewHP(RpcHandler, APIVer, "rpc"))
 	return h
 }
 
 func (h *RPCHandlers) AddPost(mf appsrv.MiddlewareFunc) *RPCHandlers {
-	h.AddByMethod(POST, mf, NewHP(rpcHandler, APIVer, "rpc"))
+	h.AddByMethod(POST, mf, NewHP(RpcHandler, APIVer, "rpc"))
 	return h
 }
 
-func rpcHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
+func RpcHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 	curpath := appctx.AppContextCurrentPath(ctx)
 	var resType string
 	var resId string
@@ -79,7 +79,7 @@ func rpcHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 			log.Errorf("Error get JSON body: %s", e)
 		}
 	default:
-		httperrors.InvalidInputError(w, fmt.Sprintf("Unsupported RPC method %s", req.Method))
+		httperrors.InvalidInputError(ctx, w, fmt.Sprintf("Unsupported RPC method %s", req.Method))
 		return
 	}
 	token := AppContextToken(ctx)
@@ -91,13 +91,13 @@ func rpcHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 		if e != nil {
 			log.Debugf("module %s not found %s", resType, e)
 		}
-		httperrors.NotFoundError(w, fmt.Sprintf("resource %s not exists", resType))
+		httperrors.NotFoundError(ctx, w, fmt.Sprintf("resource %s not exists", resType))
 		return
 	}
 	modvalue := reflect.ValueOf(mod)
 	funcvalue := modvalue.MethodByName(funcname)
 	if !funcvalue.IsValid() || funcvalue.IsNil() {
-		httperrors.NotFoundError(w, fmt.Sprintf("RPC method %s not found", funcname))
+		httperrors.NotFoundError(ctx, w, fmt.Sprintf("RPC method %s not found", funcname))
 		return
 	}
 	callParams := make([]reflect.Value, 0)
@@ -127,14 +127,14 @@ func rpcHandler(ctx context.Context, w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		httperrors.BadGatewayError(w, "recv invalid data")
+		httperrors.BadGatewayError(ctx, w, "recv invalid data")
 	} else {
 		v, ok := reterr.Interface().(*httputils.JSONClientError)
 		if ok {
-			httperrors.JsonClientError(w, v)
+			httperrors.JsonClientError(ctx, w, v)
 			return
 		}
 
-		httperrors.BadGatewayError(w, fmt.Sprintf("%s", reterr.Interface()))
+		httperrors.BadGatewayError(ctx, w, fmt.Sprintf("%s", reterr.Interface()))
 	}
 }

@@ -56,6 +56,8 @@ def run_swagger_yaml(svc, swagger_pkg_dir, output_dir):
     cmd.extend(["-o", pjoin(output_dir, "swagger_%s.yaml" % svc)])
     run_cmd(cmd)
 
+def remove_prefix(text, prefix):
+    return text[text.startswith(prefix) and len(prefix):]
 
 class FuncDispatcher(object):
 
@@ -71,7 +73,7 @@ class FuncDispatcher(object):
             func = getattr(self, attr)
             if not callable(func):
                 continue
-            svc = attr.lstrip('gen_')
+            svc = remove_prefix(attr, 'gen_')
             gen_dict[svc] = func
         self.gen_dict = gen_dict
 
@@ -126,18 +128,12 @@ class ModelAPI(FuncDispatcher):
     def gen_cloudcommon(self):
         self.run(pkg=["cloudcommon", "db"])
         self.run(pkg=["cloudcommon", "db", "proxy"], out=["cloudcommon", "proxy"])
-
-    def gen_cloudprovider(self):
         self.run_same("cloudprovider")
-
-    def gen_compute(self):
-        self.run_model("compute")
-
-    def gen_image(self):
-        self.run_model("image")
-
-    def gen_identity(self):
         self.run(pkg=["keystone", "models"], out=["identity"])
+        self.run_model("compute")
+        self.run_model("image")
+        self.run_model("cloudid")
+        self.run_model("notify")
 
     def gen_monitor(self):
         self.run(pkg=["monitor", "models"], out=["monitor"])
@@ -175,9 +171,14 @@ class SwaggerCode(FuncDispatcher):
     def gen_image(self):
         self.run("image", pkg=["models"], out="image")
 
+    def gen_cloudid(self):
+        self.run("cloudid", pkg=["models"], out="cloudid")
+
     def gen_monitor(self):
         self.run("monitor", pkg=["models"], out="monitor")
 
+    def gen_notify(self):
+        self.run("notify", pkg=["models"], out="notify")
 
 class SwaggerYAML(FuncDispatcher):
 
@@ -202,9 +203,14 @@ class SwaggerYAML(FuncDispatcher):
     def gen_image(self):
         self.run("image")
 
+    def gen_cloudid(self):
+        self.run("cloudid")
+
     def gen_monitor(self):
         self.run("monitor")
 
+    def gen_notify(self):
+        self.run("notify")
 
 class SwaggerServe(object):
 

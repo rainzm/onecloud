@@ -20,7 +20,6 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
-	"yunion.io/x/pkg/util/secrules"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
@@ -34,6 +33,9 @@ type SRegion struct {
 
 	client       *SCtyunClient
 	storageCache *SStoragecache
+
+	//
+	initialled bool
 
 	RegionName     string
 	Description    string `json:"description"`
@@ -129,14 +131,14 @@ func (self *SRegion) GetISecurityGroupById(secgroupId string) (cloudprovider.ICl
 	return self.GetSecurityGroupDetails(secgroupId)
 }
 
-func (self *SRegion) GetISecurityGroupByName(vpcId string, name string) (cloudprovider.ICloudSecurityGroup, error) {
-	segroups, err := self.GetSecurityGroups(vpcId)
+func (self *SRegion) GetISecurityGroupByName(opts *cloudprovider.SecurityGroupFilterOptions) (cloudprovider.ICloudSecurityGroup, error) {
+	segroups, err := self.GetSecurityGroups(opts.VpcId)
 	if err != nil {
 		return nil, errors.Wrap(err, "SRegion.GetISecurityGroupByName.GetSecurityGroups")
 	}
 
 	for i := range segroups {
-		if segroups[i].Name == name {
+		if segroups[i].Name == opts.Name {
 			return &segroups[i], nil
 		}
 	}
@@ -148,11 +150,6 @@ func (self *SRegion) CreateISecurityGroup(conf *cloudprovider.SecurityGroupCreat
 	secgroup, err := self.CreateSecurityGroup(conf.VpcId, conf.Name)
 	if err != nil {
 		return nil, errors.Wrap(err, "Region.CreateISecurityGroup")
-	}
-
-	err = self.syncSecgroupRules(secgroup.GetId(), conf.Rules)
-	if err != nil {
-		return nil, errors.Wrap(err, "Region.CreateISecurityGroup.syncSecgroupRules")
 	}
 
 	return secgroup, nil
@@ -195,12 +192,14 @@ func (self *SRegion) GetGeographicInfo() cloudprovider.SGeographicInfo {
 
 // http://ctyun-api-url/apiproxy/v3/order/getZoneConfig
 func (self *SRegion) GetIZones() ([]cloudprovider.ICloudZone, error) {
-	if self.izones == nil {
+	if self.izones == nil || self.initialled == false {
 		var err error
 		err = self.fetchInfrastructure()
 		if err != nil {
 			return nil, err
 		}
+
+		self.initialled = true
 	}
 	return self.izones, nil
 }
@@ -208,11 +207,13 @@ func (self *SRegion) GetIZones() ([]cloudprovider.ICloudZone, error) {
 // http://ctyun-api-url/apiproxy/v3/getVpcs
 // http://ctyun-api-url/apiproxy/v3/getVpcs
 func (self *SRegion) GetIVpcs() ([]cloudprovider.ICloudVpc, error) {
-	if self.ivpcs == nil {
+	if self.ivpcs == nil || self.initialled == false {
 		err := self.fetchInfrastructure()
 		if err != nil {
 			return nil, err
 		}
+
+		self.initialled = true
 	}
 	return self.ivpcs, nil
 }
@@ -288,28 +289,6 @@ func (self *SRegion) DeleteSecurityGroup(securityGroupId string) error {
 	}
 
 	return nil
-}
-
-func (self *SRegion) SyncSecurityGroup(secgroupId string, vpcId string, name string, desc string, rules []secrules.SecurityRule) (string, error) {
-	if len(secgroupId) > 0 {
-		_, err := self.GetSecurityGroupDetails(secgroupId)
-		if err == cloudprovider.ErrNotFound {
-			secgroupId = ""
-		} else if err != nil {
-			return "", errors.Wrapf(err, "self.GetSecurityGroupDetails(%s)", secgroupId)
-		}
-	}
-
-	if len(secgroupId) == 0 {
-		secgroup, err := self.CreateSecurityGroup(vpcId, name)
-		if err != nil {
-			return "", errors.Wrap(err, "self.CreateSecurityGroup")
-		}
-		secgroupId = secgroup.GetId()
-	}
-
-	rules = SecurityRuleSetToAllowSet(rules)
-	return secgroupId, self.syncSecgroupRules(secgroupId, rules)
 }
 
 func (self *SRegion) CreateIVpc(name string, desc string, cidr string) (cloudprovider.ICloudVpc, error) {

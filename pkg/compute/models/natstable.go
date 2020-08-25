@@ -63,6 +63,14 @@ type SNatSEntry struct {
 	SourceCIDR string `width:"22" charset:"ascii" list:"user" create:"required"`
 }
 
+func (self *SNatSEntry) GetCloudproviderId() string {
+	network, err := self.GetNetwork()
+	if err == nil {
+		return network.GetCloudproviderId()
+	}
+	return ""
+}
+
 func (self *SNatSEntry) GetNetwork() (*SNetwork, error) {
 	if len(self.NetworkId) == 0 {
 		return nil, nil
@@ -160,7 +168,7 @@ func (man *SNatSEntryManager) ValidateCreateData(ctx context.Context, userCred m
 		//check sourceCidr and convert to netutils.IPV4Range
 		sourceIPV4Range, err := newIPv4RangeFromCIDR(input.SourceCidr)
 		if err != nil {
-			return nil, httperrors.NewInputParameterError(err.Error())
+			return nil, httperrors.NewInputParameterError("%v", err)
 		}
 		// get natgateway
 		model, err := man.FetchById(input.NatgatewayId)
@@ -186,7 +194,7 @@ func (man *SNatSEntryManager) ValidateCreateData(ctx context.Context, userCred m
 	} else {
 		network, err := man.checkNetWorkId(input.NetworkId)
 		if err != nil {
-			return nil, httperrors.NewInputParameterError(err.Error())
+			return nil, httperrors.NewInputParameterError("%v", err)
 		}
 		data.Add(jsonutils.NewString(network.GetExternalId()), "network_ext_id")
 	}
@@ -253,7 +261,7 @@ func (manager *SNatSEntryManager) SyncNatSTable(ctx context.Context, userCred mc
 	}
 
 	for i := 0; i < len(commondb); i += 1 {
-		err := commondb[i].SyncWithCloudNatSTable(ctx, userCred, commonext[i], syncOwnerId)
+		err := commondb[i].SyncWithCloudNatSTable(ctx, userCred, commonext[i], syncOwnerId, provider.Id)
 		if err != nil {
 			result.UpdateError(err)
 			continue
@@ -263,7 +271,7 @@ func (manager *SNatSEntryManager) SyncNatSTable(ctx context.Context, userCred mc
 	}
 
 	for i := 0; i < len(added); i += 1 {
-		routeTableNew, err := manager.newFromCloudNatSTable(ctx, userCred, syncOwnerId, nat, added[i])
+		routeTableNew, err := manager.newFromCloudNatSTable(ctx, userCred, syncOwnerId, nat, added[i], provider.Id)
 		if err != nil {
 			result.AddError(err)
 			continue
@@ -285,13 +293,19 @@ func (self *SNatSEntry) syncRemoveCloudNatSTable(ctx context.Context, userCred m
 	return self.RealDelete(ctx, userCred)
 }
 
-func (self *SNatSEntry) SyncWithCloudNatSTable(ctx context.Context, userCred mcclient.TokenCredential, extEntry cloudprovider.ICloudNatSEntry, syncOwnerId mcclient.IIdentityProvider) error {
+func (self *SNatSEntry) SyncWithCloudNatSTable(ctx context.Context, userCred mcclient.TokenCredential, extEntry cloudprovider.ICloudNatSEntry, syncOwnerId mcclient.IIdentityProvider, managerId string) error {
 	diff, err := db.UpdateWithLock(ctx, self, func() error {
 		self.Status = extEntry.GetStatus()
 		self.IP = extEntry.GetIP()
 		self.SourceCIDR = extEntry.GetSourceCIDR()
 		if extNetworkId := extEntry.GetNetworkId(); len(extNetworkId) > 0 {
-			network, err := db.FetchByExternalId(NetworkManager, extNetworkId)
+			network, err := db.FetchByExternalIdAndManagerId(NetworkManager, extNetworkId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				wire := WireManager.Query().SubQuery()
+				vpc := VpcManager.Query().SubQuery()
+				return q.Join(wire, sqlchemy.Equals(wire.Field("id"), q.Field("wire_id"))).
+					Join(vpc, sqlchemy.Equals(vpc.Field("id"), wire.Field("vpc_id"))).
+					Filter(sqlchemy.Equals(vpc.Field("manager_id"), managerId))
+			})
 			if err != nil {
 				return err
 			}
@@ -309,7 +323,7 @@ func (self *SNatSEntry) SyncWithCloudNatSTable(ctx context.Context, userCred mcc
 	return nil
 }
 
-func (manager *SNatSEntryManager) newFromCloudNatSTable(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, nat *SNatGateway, extEntry cloudprovider.ICloudNatSEntry) (*SNatSEntry, error) {
+func (manager *SNatSEntryManager) newFromCloudNatSTable(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, nat *SNatGateway, extEntry cloudprovider.ICloudNatSEntry, managerId string) (*SNatSEntry, error) {
 	table := SNatSEntry{}
 	table.SetModelManager(manager, &table)
 
@@ -322,14 +336,20 @@ func (manager *SNatSEntryManager) newFromCloudNatSTable(ctx context.Context, use
 	table.IP = extEntry.GetIP()
 	table.SourceCIDR = extEntry.GetSourceCIDR()
 	if extNetworkId := extEntry.GetNetworkId(); len(extNetworkId) > 0 {
-		network, err := db.FetchByExternalId(NetworkManager, extNetworkId)
+		network, err := db.FetchByExternalIdAndManagerId(NetworkManager, extNetworkId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			wire := WireManager.Query().SubQuery()
+			vpc := VpcManager.Query().SubQuery()
+			return q.Join(wire, sqlchemy.Equals(wire.Field("id"), q.Field("wire_id"))).
+				Join(vpc, sqlchemy.Equals(vpc.Field("id"), wire.Field("vpc_id"))).
+				Filter(sqlchemy.Equals(vpc.Field("manager_id"), managerId))
+		})
 		if err != nil {
 			return nil, err
 		}
 		table.NetworkId = network.GetId()
 	}
 
-	err := manager.TableSpec().Insert(&table)
+	err := manager.TableSpec().Insert(ctx, &table)
 	if err != nil {
 		log.Errorf("newFromCloudNatSTable fail %s", err)
 		return nil, err

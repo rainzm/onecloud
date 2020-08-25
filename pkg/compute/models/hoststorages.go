@@ -62,17 +62,17 @@ type SHoststorage struct {
 	SHostJointsBase
 
 	// 宿主机Id
-	HostId string `width:"36" charset:"ascii" nullable:"false" list:"admin" create:"required" json:"host_id"`
+	HostId string `width:"36" charset:"ascii" nullable:"false" list:"domain" create:"required" json:"host_id"`
 	// 存储Id
-	StorageId string `width:"36" charset:"ascii" nullable:"false" list:"admin" create:"required" json:"storage_id"`
+	StorageId string `width:"36" charset:"ascii" nullable:"false" list:"domain" create:"required" json:"storage_id"`
 
 	// 挂载点
-	MountPoint string `width:"256" charset:"ascii" nullable:"false" list:"admin" update:"admin" create:"required" json:"mount_point"`
+	MountPoint string `width:"256" charset:"ascii" nullable:"false" list:"domain" update:"domain" create:"required" json:"mount_point"`
 
 	// 配置信息
-	Config *jsonutils.JSONArray `nullable:"true" get:"admin" json:"config"`
+	Config *jsonutils.JSONArray `nullable:"true" get:"domain" json:"config"`
 	// 真实容量大小
-	RealCapacity int64 `nullable:"true" list:"admin" json:"real_capacity"`
+	RealCapacity int64 `nullable:"true" list:"domain" json:"real_capacity"`
 }
 
 func (manager *SHoststorageManager) GetMasterFieldName() string {
@@ -81,14 +81,6 @@ func (manager *SHoststorageManager) GetMasterFieldName() string {
 
 func (manager *SHoststorageManager) GetSlaveFieldName() string {
 	return "storage_id"
-}
-
-func (joint *SHoststorage) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SHoststorage) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
 }
 
 func (self *SHoststorage) GetExtraDetails(
@@ -190,8 +182,34 @@ func (manager *SHoststorageManager) ValidateCreateData(ctx context.Context, user
 	return data, nil
 }
 
+func (self *SHoststorage) syncLocalStorageShare(ctx context.Context, userCred mcclient.TokenCredential) {
+	// sync host and local storage permissions
+	host := self.GetHost()
+	storage := self.GetStorage()
+	if host != nil && storage != nil && storage.IsLocal() {
+		shareInfo := host.GetSharedInfo()
+		if !shareInfo.IsPublic {
+			_, err := storage.performPrivateInternal(ctx, userCred, nil, apis.PerformPrivateInput{})
+			if err != nil {
+				log.Errorf("attach storage: private local storage fail %s", err)
+			}
+		} else {
+			input := apis.PerformPublicDomainInput{
+				Scope:           string(shareInfo.PublicScope),
+				SharedDomainIds: shareInfo.SharedDomains,
+			}
+			_, err := storage.performPublicInternal(ctx, userCred, nil, input)
+			if err != nil {
+				log.Errorf("attach storage: public local storage fail %s", err)
+			}
+		}
+	}
+}
+
 func (self *SHoststorage) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
 	self.SHostJointsBase.PostCreate(ctx, userCred, ownerId, query, data)
+
+	self.syncLocalStorageShare(ctx, userCred)
 
 	if err := self.StartHostStorageAttachTask(ctx, userCred); err != nil {
 		log.Errorf("failed to attach storage error: %v", err)

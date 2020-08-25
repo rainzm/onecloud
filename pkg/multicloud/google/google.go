@@ -51,6 +51,7 @@ const (
 	GOOGLE_BILLING_API_VERSION    = "v1"
 	GOOGLE_MONITOR_API_VERSION    = "v3"
 	GOOGLE_DBINSTANCE_API_VERSION = "v1beta4"
+	GOOGLE_IAM_API_VERSION        = "v1"
 
 	GOOGLE_MANAGER_DOMAIN        = "https://cloudresourcemanager.googleapis.com"
 	GOOGLE_COMPUTE_DOMAIN        = "https://www.googleapis.com/compute"
@@ -60,6 +61,7 @@ const (
 	GOOGLE_BILLING_DOMAIN        = "https://cloudbilling.googleapis.com"
 	GOOGLE_MONITOR_DOMAIN        = "https://monitoring.googleapis.com"
 	GOOGLE_DBINSTANCE_DOMAIN     = "https://www.googleapis.com/sql"
+	GOOGLE_IAM_DOMAIN            = "https://iam.googleapis.com"
 
 	MAX_RETRY = 3
 )
@@ -258,6 +260,65 @@ func (self *SGoogleClient) managerGet(resource string) (jsonutils.JSONObject, er
 	return jsonRequest(self.client, "GET", GOOGLE_MANAGER_DOMAIN, GOOGLE_MANAGER_API_VERSION, resource, nil, nil, self.debug)
 }
 
+func (self *SGoogleClient) managerPost(resource string, params map[string]string, body jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return jsonRequest(self.client, "POST", GOOGLE_MANAGER_DOMAIN, GOOGLE_MANAGER_API_VERSION, resource, params, body, self.debug)
+}
+
+func (self *SGoogleClient) iamPost(resource string, params map[string]string, body jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return jsonRequest(self.client, "POST", GOOGLE_IAM_DOMAIN, GOOGLE_IAM_API_VERSION, resource, params, body, self.debug)
+}
+
+func (self *SGoogleClient) iamList(resource string, params map[string]string) (jsonutils.JSONObject, error) {
+	return jsonRequest(self.client, "GET", GOOGLE_IAM_DOMAIN, GOOGLE_IAM_API_VERSION, resource, params, nil, self.debug)
+}
+
+func (self *SGoogleClient) iamGet(resource string) (jsonutils.JSONObject, error) {
+	return jsonRequest(self.client, "GET", GOOGLE_IAM_DOMAIN, GOOGLE_IAM_API_VERSION, resource, nil, nil, self.debug)
+}
+
+func (self *SGoogleClient) iamPatch(resource string, params map[string]string, body jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return jsonRequest(self.client, "PATCH", GOOGLE_IAM_DOMAIN, GOOGLE_IAM_API_VERSION, resource, params, body, self.debug)
+}
+
+func (self *SGoogleClient) iamDelete(id string, retval interface{}) error {
+	resp, err := jsonRequest(self.client, "DELETE", GOOGLE_IAM_DOMAIN, GOOGLE_IAM_API_VERSION, id, nil, nil, self.debug)
+	if err != nil {
+		return err
+	}
+	if retval != nil {
+		return resp.Unmarshal(retval)
+	}
+	return nil
+}
+
+func (self *SGoogleClient) iamListAll(resource string, params map[string]string, retval interface{}) error {
+	if params == nil {
+		params = map[string]string{}
+	}
+	items := jsonutils.NewArray()
+	nextPageToken := ""
+	params["pageSize"] = "100"
+	for {
+		params["pageToken"] = nextPageToken
+		resp, err := self.iamList(resource, params)
+		if err != nil {
+			return errors.Wrap(err, "iamList")
+		}
+		if resp.Contains("roles") {
+			_items, err := resp.GetArray("roles")
+			if err != nil {
+				return errors.Wrap(err, "resp.GetArray")
+			}
+			items.Add(_items...)
+		}
+		nextPageToken, _ = resp.GetString("nextPageToken")
+		if len(nextPageToken) == 0 {
+			break
+		}
+	}
+	return items.Unmarshal(retval)
+}
+
 func (self *SGoogleClient) ecsListAll(resource string, params map[string]string, retval interface{}) error {
 	if params == nil {
 		params = map[string]string{}
@@ -359,23 +420,34 @@ func (self *SGoogleClient) rdsUpdate(resource string, params map[string]string, 
 	return selfLink, nil
 }
 
-func (self *SGoogleClient) ecsInsert(resource string, body jsonutils.JSONObject, retval interface{}) error {
-	resource = fmt.Sprintf("projects/%s/%s", self.projectId, resource)
-	if name, _ := body.GetString("name"); len(name) > 0 {
+func (self *SGoogleClient) checkAndSetName(body jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	name, _ := body.GetString("name")
+	if len(name) > 0 {
 		generateName := ""
-		for _, s := range name {
-			if unicode.IsLetter(s) || unicode.IsDigit(s) {
+		for _, s := range strings.ToLower(name) {
+			if unicode.IsLetter(s) || unicode.IsDigit(s) || s == '-' {
 				generateName = fmt.Sprintf("%s%c", generateName, s)
-			} else {
-				generateName = fmt.Sprintf("%s-", generateName)
 			}
+		}
+		if strings.HasSuffix(generateName, "-") {
+			generateName += "1"
 		}
 		if name != generateName {
 			err := jsonutils.Update(body, map[string]string{"name": generateName})
 			if err != nil {
-				log.Errorf("faild to generate google name from %s -> %s", name, generateName)
+				return nil, fmt.Errorf("faild to generate google name from %s -> %s", name, generateName)
 			}
 		}
+	}
+	return body, nil
+}
+
+func (self *SGoogleClient) ecsInsert(resource string, body jsonutils.JSONObject, retval interface{}) error {
+	resource = fmt.Sprintf("projects/%s/%s", self.projectId, resource)
+	var err error
+	body, err = self.checkAndSetName(body)
+	if err != nil {
+		return errors.Wrap(err, "checkAndSetName")
 	}
 	resp, err := jsonRequest(self.client, "POST", GOOGLE_COMPUTE_DOMAIN, GOOGLE_API_VERSION, resource, nil, body, self.debug)
 	if err != nil {
@@ -558,6 +630,11 @@ func (self *SGoogleClient) cloudbuildInsert(resource string, body jsonutils.JSON
 
 func (self *SGoogleClient) rdsInsert(resource string, body jsonutils.JSONObject, retval interface{}) error {
 	resource = fmt.Sprintf("projects/%s/%s", self.projectId, resource)
+	var err error
+	body, err = self.checkAndSetName(body)
+	if err != nil {
+		return errors.Wrap(err, "checkAndSetName")
+	}
 	resp, err := jsonRequest(self.client, "POST", GOOGLE_DBINSTANCE_DOMAIN, GOOGLE_DBINSTANCE_API_VERSION, resource, nil, body, self.debug)
 	if err != nil {
 		return err
@@ -685,48 +762,82 @@ func rawRequest(client *http.Client, method httputils.THttpMethod, domain, apiVe
 	return httputils.Request(client, context.Background(), method, resource, header, body, debug)
 }
 
-func _jsonRequest(client *http.Client, method httputils.THttpMethod, url string, body jsonutils.JSONObject, debug bool) (jsonutils.JSONObject, error) {
-	var (
-		retry bool                 = false
-		err   error                = nil
-		data  jsonutils.JSONObject = nil
-	)
+/*
+  "error": {
+    "code": 400,
+    "message": "Request contains an invalid argument.",
+    "status": "INVALID_ARGUMENT",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.cloudresourcemanager.v1.ProjectIamPolicyError",
+        "type": "SOLO_MUST_INVITE_OWNERS",
+        "member": "user:test",
+        "role": "roles/owner"
+      }
+    ]
+  }
+*/
+
+type gError struct {
+	ErrorInfo struct {
+		Code    int
+		Message string
+		Status  string
+		Details jsonutils.JSONObject
+	} `json:"error"`
+	Class string
+}
+
+func (g *gError) Error() string {
+	return jsonutils.Marshal(g).String()
+}
+
+func (g *gError) ParseErrorFromJsonResponse(statusCode int, body jsonutils.JSONObject) error {
+	if body != nil {
+		body.Unmarshal(g)
+	}
+	if g.ErrorInfo.Code == 0 {
+		g.ErrorInfo.Code = statusCode
+	}
+	if g.ErrorInfo.Details == nil {
+		g.ErrorInfo.Details = body
+	}
+	if len(g.Class) == 0 {
+		g.Class = http.StatusText(statusCode)
+	}
+	if statusCode == 404 {
+		return errors.Wrap(cloudprovider.ErrNotFound, g.Error())
+	}
+	return g
+}
+
+func _jsonRequest(cli *http.Client, method httputils.THttpMethod, url string, body jsonutils.JSONObject, debug bool) (jsonutils.JSONObject, error) {
+	client := httputils.NewJsonClient(cli)
+	req := httputils.NewJsonRequest(method, url, body)
+	var ge gError
 	for i := 0; i < MAX_RETRY; i++ {
-		_, data, err = httputils.JSONRequest(client, context.Background(), method, url, nil, body, debug)
-		if err != nil {
-			if body != nil {
-				log.Errorf("%s %s params: %s error: %v", method, url, body.PrettyString(), err)
-			} else {
-				log.Errorf("%s %s error: %v", method, url, err)
-			}
-			for _, msg := range []string{
-				"EOF",
-				"i/o timeout",
-				"TLS handshake timeout",
-				"connection reset by peer",
-			} {
-				if strings.Index(err.Error(), msg) >= 0 {
-					retry = true
-					break
-				}
-			}
-			if !retry {
-				break
+		_, data, err := client.Send(context.Background(), req, &ge, debug)
+		if err == nil {
+			return data, nil
+		}
+		if body != nil {
+			log.Errorf("%s %s params: %s error: %v", method, url, body.PrettyString(), err)
+		} else {
+			log.Errorf("%s %s error: %v", method, url, err)
+		}
+		for _, msg := range []string{
+			"EOF",
+			"i/o timeout",
+			"TLS handshake timeout",
+			"connection reset by peer",
+		} {
+			if strings.Index(err.Error(), msg) >= 0 {
+				continue
 			}
 		}
-		if !retry {
-			break
-		}
+		return nil, &ge
 	}
-	if err != nil {
-		errMsg := strings.ToLower(err.Error())
-		if strings.Index(errMsg, "not found") > 0 || strings.Index(errMsg, "not exist") > 0 {
-			// The Cloud SQL instance does not exist.
-			return nil, cloudprovider.ErrNotFound
-		}
-		return nil, errors.Wrap(err, "JSONRequest")
-	}
-	return data, nil
+	return nil, &ge
 }
 
 func (self *SGoogleClient) GetRegion(regionId string) *SRegion {
@@ -818,6 +929,24 @@ func (self *SGoogleClient) GetCapabilities() []string {
 		cloudprovider.CLOUD_CAPABILITY_RDS,
 		// cloudprovider.CLOUD_CAPABILITY_CACHE,
 		// cloudprovider.CLOUD_CAPABILITY_EVENT,
+		cloudprovider.CLOUD_CAPABILITY_CLOUDID,
 	}
 	return caps
+}
+
+func (self *SGoogleClient) GetSamlSpInitiatedLoginUrl(idpName string) string {
+	// GOOGLE只支持一个IDP, 可以将organization名字存储在idpName里，避免因为权限不足，无法获取organization名称
+	if len(idpName) == 0 {
+		orgs, _ := self.ListOrganizations()
+		if len(orgs) != 1 {
+			log.Warningf("Organization count %d != 1, require assign the service account to ONE organization with organization viewer/admin role", len(orgs))
+		} else {
+			idpName = orgs[0].DisplayName
+		}
+	}
+	if len(idpName) == 0 {
+		log.Errorf("no valid organization name for this GCP account")
+		return ""
+	}
+	return fmt.Sprintf("https://www.google.com/a/%s/ServiceLogin?continue=https://console.cloud.google.com", idpName)
 }

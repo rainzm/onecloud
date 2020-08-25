@@ -112,7 +112,7 @@ func ValidateListenerRuleConditions(condition string) error {
 		return httperrors.NewInputParameterError("condition values limit (5 per rule). %d given.", conditionArray.Length())
 	}
 
-	cs := conditionArray.Value()
+	cs, _ := conditionArray.GetArray()
 	for i := range cs {
 		err := validateListenerRuleCondition(cs[i], limitations)
 		if err != nil {
@@ -129,7 +129,7 @@ func validateListenerRuleCondition(condition jsonutils.JSONObject, limitations *
 		return fmt.Errorf("invalid condition fromat,required dict. %#v", condition)
 	}
 
-	dict := conditionDict.Value()
+	dict, _ := conditionDict.GetMap()
 	field, ok := dict["field"]
 	if !ok {
 		return fmt.Errorf("parseCondition invalid condition, missing field: %#v", condition)
@@ -315,7 +315,7 @@ func parseConditionStringArrayValues(values jsonutils.JSONObject, limitations *m
 		return fmt.Errorf("parseConditionStringArrayValues invalid values format, required array: %#v", values)
 	}
 
-	vs := objs.Value()
+	vs, _ := objs.GetArray()
 	for i := range vs {
 		(*limitations)["rules"] = (*limitations)["rules"] - 1
 		if (*limitations)["rules"] < 0 {
@@ -337,7 +337,7 @@ func parseConditionDictArrayValues(values jsonutils.JSONObject, limitations *map
 		return fmt.Errorf("parseConditionDictArrayValues invalid values format, required array: %#v", values)
 	}
 
-	vs := objs.Value()
+	vs, _ := objs.GetArray()
 	for i := range vs {
 		(*limitations)["rules"] = (*limitations)["rules"] - 1
 		if (*limitations)["rules"] < 0 {
@@ -499,7 +499,7 @@ func (man *SLoadbalancerListenerRuleManager) ValidateCreateData(ctx context.Cont
 	}
 
 	backendGroupV := validators.NewModelIdOrNameValidator("backend_group", "loadbalancerbackendgroup", ownerId)
-	if region.Provider == api.CLOUD_PROVIDER_ONECLOUD {
+	if region.GetDriver().IsSupportLoadbalancerListenerRuleRedirect() {
 		// backend group can be empty if you support redirect in rule
 		backendGroupV.Optional(true)
 	}
@@ -558,7 +558,11 @@ func (lbr *SLoadbalancerListenerRule) AllowPerformStatus(ctx context.Context, us
 
 func (lbr *SLoadbalancerListenerRule) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
 	backendGroupV := validators.NewModelIdOrNameValidator("backend_group", "loadbalancerbackendgroup", lbr.GetOwnerId())
-	backendGroupV.Optional(true)
+	if lbr.BackendGroupId != "" {
+		backendGroupV.Default(lbr.BackendGroupId)
+	} else {
+		backendGroupV.Optional(true)
+	}
 	if err := backendGroupV.Validate(data); err != nil {
 		return nil, err
 	}
@@ -821,6 +825,28 @@ func (lbr *SLoadbalancerListenerRule) updateCachedLoadbalancerBackendGroupAssoci
 				}
 			}
 		}
+	case api.CLOUD_PROVIDER_OPENSTACK:
+		_group, err := db.FetchByExternalId(OpenstackCachedLbbgManager, exteralLbbgId)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				lbr.BackendGroupId = ""
+			}
+			return fmt.Errorf("Fetch openstack loadbalancer backendgroup by external id %s failed: %s", exteralLbbgId, err)
+		}
+
+		if _group != nil {
+			group := _group.(*SOpenstackCachedLbbg)
+			if group.AssociatedId != lbr.Id {
+				_, err := db.UpdateWithLock(ctx, group, func() error {
+					group.AssociatedId = lbr.Id
+					group.AssociatedType = api.LB_ASSOCIATE_TYPE_RULE
+					return nil
+				})
+				if err != nil {
+					return errors.Wrap(err, "LoadbalancerListener.updateCachedLoadbalancerBackendGroupAssociate.openstack")
+				}
+			}
+		}
 	default:
 		return nil
 	}
@@ -850,7 +876,7 @@ func (man *SLoadbalancerListenerRuleManager) newFromCloudLoadbalancerListenerRul
 	}
 	lbr.Name = newName
 	lbr.constructFieldsFromCloudListenerRule(userCred, extRule)
-	err = man.TableSpec().Insert(lbr)
+	err = man.TableSpec().Insert(ctx, lbr)
 
 	if err != nil {
 		log.Errorf("newFromCloudLoadbalancerListenerRule fail %s", err)
@@ -937,7 +963,7 @@ func (lbr *SLoadbalancerListenerRule) SyncWithCloudLoadbalancerListenerRule(
 
 func (manager *SLoadbalancerListenerRuleManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
 	virts := manager.Query().IsFalse("pending_deleted")
-	return db.CalculateProjectResourceCount(virts)
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (manager *SLoadbalancerListenerRuleManager) ListItemExportKeys(ctx context.Context,

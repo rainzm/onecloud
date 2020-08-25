@@ -228,7 +228,7 @@ func (man *SProxySettingManager) InitializeData() error {
 	ps.Description = "Connect directly"
 	ps.IsPublic = true
 	ps.PublicScope = string(rbacutils.ScopeSystem)
-	if err := man.TableSpec().Insert(ps); err != nil {
+	if err := man.TableSpec().Insert(context.Background(), ps); err != nil {
 		return err
 	}
 	return nil
@@ -241,14 +241,14 @@ func RegisterReferrer(man db.IModelManager) {
 }
 
 func ValidateProxySettingResourceInput(userCred mcclient.TokenCredential, input proxyapi.ProxySettingResourceInput) (*SProxySetting, proxyapi.ProxySettingResourceInput, error) {
-	m, err := ProxySettingManager.FetchByIdOrName(userCred, input.ProxySetting)
+	m, err := ProxySettingManager.FetchByIdOrName(userCred, input.ProxySettingId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", ProxySettingManager.Keyword(), input.ProxySetting)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", ProxySettingManager.Keyword(), input.ProxySettingId)
 		} else {
 			return nil, input, errors.Wrapf(err, "ProxySettingManager.FetchByIdOrName")
 		}
 	}
-	input.ProxySetting = m.GetId()
+	input.ProxySettingId = m.GetId()
 	return m.(*SProxySetting), input, nil
 }

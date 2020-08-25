@@ -204,8 +204,8 @@ func (man *SLoadbalancerCertificateManager) ListItemFilter(
 	}
 
 	if query.Usable != nil && *query.Usable {
-		region := query.Cloudregion
-		manager := query.Cloudprovider
+		region := query.CloudregionId
+		manager := query.CloudproviderId
 
 		// 证书可用包含两类：1.本地证书内容不为空 2.公有云中已经存在，但是证书内容不完整的证书
 		if len(region) > 0 || len(manager) > 0 {
@@ -357,7 +357,7 @@ func (man *SLoadbalancerCertificateManager) InitializeData() error {
 	return nil
 }
 
-func (man *SLoadbalancerCertificateManager) CreateCertificate(userCred mcclient.TokenCredential, name string, publicKey string, privateKey, fingerprint string) (*SLoadbalancerCertificate, error) {
+func (man *SLoadbalancerCertificateManager) CreateCertificate(ctx context.Context, userCred mcclient.TokenCredential, name string, publicKey string, privateKey, fingerprint string) (*SLoadbalancerCertificate, error) {
 	if len(fingerprint) == 0 {
 		return nil, fmt.Errorf("CreateCertificate fingerprint can not be empty")
 	}
@@ -385,7 +385,7 @@ func (man *SLoadbalancerCertificateManager) CreateCertificate(userCred mcclient.
 		cert.ProjectId = userCred.GetProjectId()
 		cert.ProjectSrc = string(apis.OWNER_SOURCE_CLOUD)
 
-		err = man.TableSpec().Insert(cert)
+		err = man.TableSpec().Insert(ctx, cert)
 		if err != nil {
 			return nil, err
 		}
@@ -402,5 +402,5 @@ func (man *SLoadbalancerCertificateManager) CreateCertificate(userCred mcclient.
 
 func (manager *SLoadbalancerCertificateManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
 	virts := manager.Query().IsFalse("pending_deleted")
-	return db.CalculateProjectResourceCount(virts)
+	return db.CalculateResourceCount(virts, "tenant_id")
 }

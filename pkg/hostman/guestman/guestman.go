@@ -72,6 +72,10 @@ type SGuestManager struct {
 	GuestStartWorker *appsrv.SWorkerManager
 
 	isLoaded bool
+
+	// dirty servers chan
+	dirtyServers     []*SKVMGuestInstance
+	dirtyServersChan chan struct{}
 }
 
 func NewGuestManager(host hostutils.IHost, serversPath string) *SGuestManager {
@@ -86,6 +90,8 @@ func NewGuestManager(host hostutils.IHost, serversPath string) *SGuestManager {
 	manager.StartCpusetBalancer()
 	manager.LoadExistingGuests()
 	manager.host.StartDHCPServer()
+	manager.dirtyServersChan = make(chan struct{})
+	manager.dirtyServers = make([]*SKVMGuestInstance, 0)
 	return manager
 }
 
@@ -111,7 +117,7 @@ func (m *SGuestManager) SaveServer(sid string, s *SKVMGuestInstance) {
 	m.Servers.Store(sid, s)
 }
 
-func (m *SGuestManager) Bootstrap() {
+func (m *SGuestManager) Bootstrap() chan struct{} {
 	if m.isLoaded || len(m.ServersPath) == 0 {
 		log.Errorln("Guestman bootstrap has been called!!!!!")
 	} else {
@@ -123,6 +129,7 @@ func (m *SGuestManager) Bootstrap() {
 			m.OnLoadExistingGuestsComplete()
 		}
 	}
+	return m.dirtyServersChan
 }
 
 func (m *SGuestManager) VerifyExistingGuests(pendingDelete bool) {
@@ -130,9 +137,8 @@ func (m *SGuestManager) VerifyExistingGuests(pendingDelete bool) {
 	params.Set("limit", jsonutils.NewInt(0))
 	params.Set("scope", jsonutils.NewString("system"))
 	params.Set("system", jsonutils.JSONTrue)
-	params.Set("host", jsonutils.NewString(m.host.GetHostId()))
 	params.Set("pending_delete", jsonutils.NewBool(pendingDelete))
-	params.Set("get_backup_guests_on_host", jsonutils.JSONTrue)
+	params.Set("get_all_guests_on_host", jsonutils.NewString(m.host.GetHostId()))
 	if len(m.CandidateServers) > 0 {
 		keys := make([]string, len(m.CandidateServers))
 		var index = 0
@@ -140,7 +146,7 @@ func (m *SGuestManager) VerifyExistingGuests(pendingDelete bool) {
 			keys[index] = k
 			index++
 		}
-		params.Set("filter.1", jsonutils.NewString(fmt.Sprintf("id.in(%s)", strings.Join(keys, ","))))
+		params.Set("filter.0", jsonutils.NewString(fmt.Sprintf("id.in(%s)", strings.Join(keys, ","))))
 	}
 	res, err := modules.Servers.List(hostutils.GetComputeSession(context.Background()), params)
 	if err != nil {
@@ -170,7 +176,7 @@ func (m *SGuestManager) OnVerifyExistingGuestsSucc(servers []jsonutils.JSONObjec
 	} else {
 		for id, server := range m.CandidateServers {
 			m.UnknownServers.Store(id, server)
-			go m.RequestVerifyDirtyServer(server)
+			m.dirtyServers = append(m.dirtyServers, server)
 			log.Errorf("Server %s not found on this host", server.GetName())
 			m.RemoveCandidateServer(server)
 		}
@@ -190,12 +196,24 @@ func (m *SGuestManager) OnLoadExistingGuestsComplete() {
 	log.Infof("Load existing guests complete...")
 	err := m.host.PutHostOnline()
 	if err != nil {
-		log.Errorln(err)
+		log.Fatalf("put host online failed %s", err)
 	}
+
+	go m.verifyDirtyServers()
 
 	if !options.HostOptions.EnableCpuBinding {
 		m.ClenaupCpuset()
 	}
+}
+
+func (m *SGuestManager) verifyDirtyServers() {
+	select {
+	case <-m.dirtyServersChan:
+	}
+	for i := 0; i < len(m.dirtyServers); i++ {
+		go m.RequestVerifyDirtyServer(m.dirtyServers[i])
+	}
+	m.dirtyServers = nil
 }
 
 func (m *SGuestManager) ClenaupCpuset() {
@@ -462,6 +480,8 @@ func (m *SGuestManager) GetStatus(sid string) string {
 				timeutils2.AddTimeout(1*time.Second,
 					func() { guest.SyncMirrorJobFailed("Block job missing") })
 				return GUEST_BLOCK_STREAM_FAIL
+			} else {
+				return GUEST_RUNNING
 			}
 		}
 		if guest.IsRunning() {
@@ -502,7 +522,7 @@ func (m *SGuestManager) GuestStart(ctx context.Context, sid string, body jsonuti
 			var data *jsonutils.JSONDict
 			params, err := body.Get("params")
 			if err != nil {
-				data = params.(*jsonutils.JSONDict)
+				data, _ = params.(*jsonutils.JSONDict)
 			}
 			guest.StartGuest(ctx, data)
 			res := jsonutils.NewDict()
@@ -598,23 +618,27 @@ func (m *SGuestManager) DestPrepareMigrate(ctx context.Context, params interface
 		return nil, err
 	}
 
-	if len(migParams.TargetStorageId) > 0 {
-		iStorage := storageman.GetManager().GetStorage(migParams.TargetStorageId)
-		if iStorage == nil {
-			return nil, fmt.Errorf("Target storage %s not found", migParams.TargetStorageId)
-		}
+	disks, _ := migParams.Desc.GetArray("disks")
+	if len(migParams.TargetStorageIds) > 0 {
+		for i := 0; i < len(migParams.TargetStorageIds); i++ {
+			iStorage := storageman.GetManager().GetStorage(migParams.TargetStorageIds[i])
+			if iStorage == nil {
+				return nil, fmt.Errorf("Target storage %s not found", migParams.TargetStorageIds[i])
+			}
 
-		err := iStorage.DestinationPrepareMigrate(
-			ctx, migParams.LiveMigrate, migParams.DisksUri, migParams.SnapshotsUri,
-			migParams.Desc, migParams.DisksBackingFile, migParams.SrcSnapshots, migParams.RebaseDisks)
-		if err != nil {
-			return nil, fmt.Errorf("dest prepare migrate failed %s", err)
+			err := iStorage.DestinationPrepareMigrate(
+				ctx, migParams.LiveMigrate, migParams.DisksUri, migParams.SnapshotsUri,
+				migParams.DisksBackingFile, migParams.SrcSnapshots, migParams.RebaseDisks, disks[i],
+			)
+			if err != nil {
+				return nil, fmt.Errorf("dest prepare migrate failed %s", err)
+			}
 		}
-
-		if err = guest.SaveDesc(migParams.Desc); err != nil {
+		if err := guest.SaveDesc(migParams.Desc); err != nil {
 			log.Errorln(err)
 			return nil, err
 		}
+
 	}
 
 	if migParams.LiveMigrate {
@@ -779,6 +803,11 @@ func (m *SGuestManager) CancelBlockJobs(ctx context.Context, params interface{})
 	sid, ok := params.(string)
 	if !ok {
 		return nil, hostutils.ParamsError
+	}
+	status := m.GetStatus(sid)
+	if status == GUSET_STOPPED {
+		hostutils.TaskComplete(ctx, nil)
+		return nil, nil
 	}
 	defer func() {
 		if r := recover(); r != nil {

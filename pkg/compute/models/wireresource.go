@@ -22,6 +22,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/reflectutils"
+	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -42,15 +43,15 @@ type SWireResourceBaseManager struct {
 }
 
 func ValidateWireResourceInput(userCred mcclient.TokenCredential, input api.WireResourceInput) (*SWire, api.WireResourceInput, error) {
-	wireObj, err := WireManager.FetchByIdOrName(userCred, input.Wire)
+	wireObj, err := WireManager.FetchByIdOrName(userCred, input.WireId)
 	if err != nil {
 		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", WireManager.Keyword(), input.Wire)
+			return nil, input, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", WireManager.Keyword(), input.WireId)
 		} else {
 			return nil, input, errors.Wrap(err, "WireManager.FetchByIdOrName")
 		}
 	}
-	input.Wire = wireObj.GetId()
+	input.WireId = wireObj.GetId()
 	return wireObj.(*SWire), input, nil
 }
 
@@ -60,6 +61,14 @@ func (self *SWireResourceBase) GetWire() *SWire {
 		return w.(*SWire)
 	}
 	return nil
+}
+
+func (self *SWireResourceBase) GetCloudproviderId() string {
+	vpc := self.GetVpc()
+	if vpc != nil {
+		return vpc.ManagerId
+	}
+	return ""
 }
 
 func (self *SWireResourceBase) GetVpc() *SVpc {
@@ -150,7 +159,7 @@ func (manager *SWireResourceBaseManager) ListItemFilter(
 	query api.WireFilterListInput,
 ) (*sqlchemy.SQuery, error) {
 	var err error
-	if len(query.Wire) > 0 {
+	if len(query.WireId) > 0 {
 		wireObj, _, err := ValidateWireResourceInput(userCred, query.WireResourceInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "ValidateWireResourceInput")
@@ -165,12 +174,39 @@ func (manager *SWireResourceBaseManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SVpcResourceBaseManager.ListItemFilter")
 	}
 
-	zoneQuery := api.ZonalFilterListInput{
-		ZonalFilterListBase: query.ZonalFilterListBase,
-	}
-	wireQ, err = manager.SZoneResourceBaseManager.ListItemFilter(ctx, wireQ, userCred, zoneQuery)
-	if err != nil {
-		return nil, errors.Wrap(err, "SZoneResourceBaseManager.ListItemFilter")
+	if len(query.ZoneList()) > 0 {
+		region := &SCloudregion{}
+		firstZone := query.FirstZone()
+		sq := ZoneManager.Query().SubQuery()
+		q := CloudregionManager.Query()
+		q = q.Join(sq, sqlchemy.Equals(sq.Field("cloudregion_id"), q.Field("id"))).Filter(sqlchemy.OR(
+			sqlchemy.Equals(sq.Field("id"), firstZone),
+			sqlchemy.Equals(sq.Field("name"), firstZone),
+		))
+		count, err := q.CountWithError()
+		if err != nil {
+			return nil, errors.Wrap(err, "CountWithError")
+		}
+		if count < 1 {
+			return nil, httperrors.NewResourceNotFoundError2("zone", firstZone)
+		}
+		err = q.First(region)
+		if err != nil {
+			return nil, errors.Wrap(err, "q.First")
+		}
+		if utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
+			vpcQ := VpcManager.Query().SubQuery()
+			q = q.Join(vpcQ, sqlchemy.Equals(vpcQ.Field("id"), q.Field("vpc_id"))).
+				Filter(sqlchemy.Equals(vpcQ.Field("cloudregion_id"), region.Id))
+		} else {
+			zoneQuery := api.ZonalFilterListInput{
+				ZonalFilterListBase: query.ZonalFilterListBase,
+			}
+			wireQ, err = manager.SZoneResourceBaseManager.ListItemFilter(ctx, wireQ, userCred, zoneQuery)
+			if err != nil {
+				return nil, errors.Wrap(err, "SZoneResourceBaseManager.ListItemFilter")
+			}
+		}
 	}
 
 	if wireQ.IsAltered() {

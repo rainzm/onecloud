@@ -26,6 +26,7 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/timeutils"
+	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -93,14 +94,6 @@ func (manager *SCloudproviderregionManager) GetSlaveFieldName() string {
 	return "cloudregion_id"
 }
 
-func (joint *SCloudproviderregion) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SCloudproviderregion) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
-}
-
 func (self *SCloudproviderregion) GetProvider() *SCloudprovider {
 	providerObj, err := CloudproviderManager.FetchById(self.CloudproviderId)
 	if err != nil {
@@ -121,7 +114,7 @@ func (self *SCloudproviderregion) GetAccount() *SCloudaccount {
 func (self *SCloudproviderregion) GetRegion() *SCloudregion {
 	regionObj, err := CloudregionManager.FetchById(self.CloudregionId)
 	if err != nil {
-		log.Errorf("CloudproviderManager.FetchById fail %s", err)
+		log.Errorf("CloudregionManager.FetchById(%s) fail %s", self.CloudregionId, err)
 		return nil
 	}
 	return regionObj.(*SCloudregion)
@@ -206,17 +199,22 @@ func (self *SCloudproviderregion) Detach(ctx context.Context, userCred mcclient.
 /*
 过滤出指定cloudAccountId || providerIds || cloudAccountId+providerIds关联的region id
 */
-func (manager *SCloudproviderregionManager) QueryRelatedRegionIds(cloudAccountId string, providerIds ...string) *sqlchemy.SSubQuery {
+func (manager *SCloudproviderregionManager) QueryRelatedRegionIds(cloudAccounts []string, providerIds ...string) *sqlchemy.SSubQuery {
 	q := manager.Query("cloudregion_id")
 
 	if len(providerIds) > 0 {
 		q = q.Filter(sqlchemy.In(q.Field("cloudprovider_id"), providerIds))
 	}
 
-	if len(cloudAccountId) > 0 {
+	if len(cloudAccounts) > 0 {
+		cpq := CloudaccountManager.Query().SubQuery()
+		subcpq := cpq.Query(cpq.Field("id")).Filter(sqlchemy.OR(
+			sqlchemy.In(cpq.Field("id"), cloudAccounts),
+			sqlchemy.In(cpq.Field("name"), cloudAccounts),
+		)).SubQuery()
 		providers := CloudproviderManager.Query().SubQuery()
 		q = q.Join(providers, sqlchemy.Equals(providers.Field("id"), q.Field("cloudprovider_id")))
-		q.Filter(sqlchemy.Equals(providers.Field("cloudaccount_id"), cloudAccountId))
+		q.Filter(sqlchemy.In(providers.Field("cloudaccount_id"), subcpq))
 	}
 
 	return q.Distinct().SubQuery()
@@ -252,7 +250,7 @@ func (manager *SCloudproviderregionManager) FetchByIdsOrCreate(providerId string
 	cpr.Enabled = true
 	cpr.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
 
-	err := manager.TableSpec().Insert(cpr)
+	err := manager.TableSpec().Insert(context.Background(), cpr)
 	if err != nil {
 		log.Errorf("insert fail %s", err)
 		return nil
@@ -260,17 +258,23 @@ func (manager *SCloudproviderregionManager) FetchByIdsOrCreate(providerId string
 	return cpr
 }
 
-func (self *SCloudproviderregion) markStartingSync(userCred mcclient.TokenCredential) error {
+func (self *SCloudproviderregion) markStartingSync(userCred mcclient.TokenCredential, syncRange *SSyncRange) error {
 	if !self.Enabled {
 		return fmt.Errorf("Cloudprovider(%s)region(%s) disabled", self.CloudproviderId, self.CloudregionId)
 	}
-	_, err := db.Update(self, func() error {
-		self.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_QUEUING
-		return nil
-	})
-	if err != nil {
-		log.Errorf("Failed to markStartingSync error: %v", err)
-		return err
+	regionIds := []string{}
+	if syncRange != nil {
+		regionIds, _ = syncRange.GetRegionIds()
+	}
+	if syncRange == nil || len(regionIds) == 0 || utils.IsInStringArray(self.CloudregionId, regionIds) {
+		_, err := db.Update(self, func() error {
+			self.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_QUEUING
+			return nil
+		})
+		if err != nil {
+			log.Errorf("Failed to markStartingSync error: %v", err)
+			return err
+		}
 	}
 	return nil
 }

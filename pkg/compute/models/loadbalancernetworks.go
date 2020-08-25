@@ -61,9 +61,9 @@ func init() {
 type SLoadbalancerNetwork struct {
 	db.SVirtualJointResourceBase
 
-	LoadbalancerId string `width:"36" charset:"ascii" nullable:"false" list:"admin"`
-	NetworkId      string `width:"36" charset:"ascii" nullable:"false" list:"admin"`
-	IpAddr         string `width:"16" charset:"ascii" list:"admin"`
+	LoadbalancerId string `width:"36" charset:"ascii" nullable:"false" list:"user"`
+	NetworkId      string `width:"36" charset:"ascii" nullable:"false" list:"user"`
+	IpAddr         string `width:"16" charset:"ascii" list:"user"`
 }
 
 func (manager *SLoadbalancernetworkManager) GetMasterFieldName() string {
@@ -121,7 +121,7 @@ func (m *SLoadbalancernetworkManager) NewLoadbalancerNetwork(ctx context.Context
 		return nil, err
 	}
 	ln.IpAddr = ipAddr
-	err = m.TableSpec().Insert(ln)
+	err = m.TableSpec().Insert(ctx, ln)
 	if err != nil {
 		// NOTE no need to free ipAddr as GetFreeIP has no side effect
 		return nil, err
@@ -179,7 +179,7 @@ func (m *SLoadbalancernetworkManager) syncLoadbalancerNetwork(ctx context.Contex
 	}
 	if len(lns) == 0 {
 		ln := &SLoadbalancerNetwork{LoadbalancerId: req.Loadbalancer.Id, NetworkId: req.NetworkId, IpAddr: req.Address}
-		return m.TableSpec().Insert(ln)
+		return m.TableSpec().Insert(ctx, ln)
 	}
 	for i := 0; i < len(lns); i++ {
 		if i == 0 {
@@ -201,16 +201,6 @@ func (m *SLoadbalancernetworkManager) syncLoadbalancerNetwork(ctx context.Contex
 
 func (ln *SLoadbalancerNetwork) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {
 	return db.DeleteModel(ctx, userCred, ln)
-}
-
-// Master implements db.IJointModel interface
-func (ln *SLoadbalancerNetwork) Master() db.IStandaloneModel {
-	return db.JointMaster(ln)
-}
-
-// Slave implements db.IJointModel interface
-func (ln *SLoadbalancerNetwork) Slave() db.IStandaloneModel {
-	return db.JointSlave(ln)
 }
 
 // Detach implements db.IJointModel interface
@@ -293,7 +283,7 @@ func totalLBNicCount(
 	case rbacutils.ScopeProject:
 		q = q.Filter(sqlchemy.Equals(lbs.Field("tenant_id"), ownerId.GetProjectId()))
 	}
-	q = RangeObjectsFilter(q, rangeObjs, nil, lbs.Field("zone_id"), lbs.Field("manager_id"))
+	q = RangeObjectsFilter(q, rangeObjs, nil, lbs.Field("zone_id"), lbs.Field("manager_id"), nil, nil)
 	q = CloudProviderFilter(q, lbs.Field("manager_id"), providers, brands, cloudEnv)
 	return q.CountWithError()
 }

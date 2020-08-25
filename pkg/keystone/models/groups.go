@@ -93,7 +93,7 @@ func (manager *SGroupManager) ListItemFilter(
 		q = q.Equals("displayname", query.Displayname)
 	}
 
-	userIdStr := query.User
+	userIdStr := query.UserId
 	if len(userIdStr) > 0 {
 		user, err := UserManager.FetchById(userIdStr)
 		if err != nil {
@@ -107,7 +107,7 @@ func (manager *SGroupManager) ListItemFilter(
 		q = q.In("id", subq.SubQuery())
 	}
 
-	projIdStr := query.Project
+	projIdStr := query.ProjectId
 	if len(projIdStr) > 0 {
 		proj, err := ProjectManager.FetchProjectById(projIdStr)
 		if err != nil {
@@ -118,6 +118,19 @@ func (manager *SGroupManager) ListItemFilter(
 			}
 		}
 		subq := AssignmentManager.fetchProjectGroupIdsQuery(proj.Id)
+		q = q.In("id", subq.SubQuery())
+	}
+
+	if len(query.IdpId) > 0 {
+		idpObj, err := IdentityProviderManager.FetchByIdOrName(userCred, query.IdpId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", IdentityProviderManager.Keyword(), query.IdpId)
+			} else {
+				return nil, errors.Wrap(err, "IdentityProviderManager.FetchByIdOrName")
+			}
+		}
+		subq := IdmappingManager.FetchPublicIdsExcludesQuery(idpObj.GetId(), api.IdMappingEntityGroup, nil)
 		q = q.In("id", subq.SubQuery())
 	}
 
@@ -240,7 +253,7 @@ func (manager *SGroupManager) RegisterExternalGroup(ctx context.Context, idpId s
 		group.Name = groupName
 		group.Displayname = groupName
 
-		err = manager.TableSpec().Insert(&group)
+		err = manager.TableSpec().Insert(ctx, &group)
 		if err != nil {
 			return nil, errors.Wrap(err, "Insert")
 		}
@@ -302,7 +315,7 @@ func (manager *SGroupManager) NamespaceScope() rbacutils.TRbacScope {
 }
 
 func (group *SGroup) getIdmapping() (*SIdmapping, error) {
-	return IdmappingManager.FetchEntity(group.Id, api.IdMappingEntityGroup)
+	return IdmappingManager.FetchFirstEntity(group.Id, api.IdMappingEntityGroup)
 }
 
 func (group *SGroup) IsReadOnly() bool {
@@ -461,7 +474,7 @@ func (group *SGroup) PerformAddUsers(
 	input api.PerformGroupAddUsersInput,
 ) (jsonutils.JSONObject, error) {
 	users := make([]*SUser, 0)
-	for _, uid := range input.User {
+	for _, uid := range input.UserIds {
 		usr, err := UserManager.FetchByIdOrName(userCred, uid)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
@@ -497,7 +510,7 @@ func (group *SGroup) PerformRemoveUsers(
 	input api.PerformGroupRemoveUsersInput,
 ) (jsonutils.JSONObject, error) {
 	users := make([]*SUser, 0)
-	for _, uid := range input.User {
+	for _, uid := range input.UserIds {
 		usr, err := UserManager.FetchByIdOrName(userCred, uid)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {

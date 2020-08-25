@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"yunion.io/x/jsonutils"
@@ -38,7 +40,7 @@ type IBridgeDriver interface {
 	Setup(IBridgeDriver) error
 	SetupAddresses(net.IPMask) error
 	SetupSlaveAddresses([][]string) error
-	SetupRoutes(routes [][]string) error
+	SetupRoutes([]iproute2.RouteSpec) error
 	BringupInterface() error
 
 	Exists() (bool, error)
@@ -48,6 +50,7 @@ type IBridgeDriver interface {
 	SetupBridgeDev() error
 	SetupInterface() error
 	PersistentMac() error
+	DisableDHCPClient() (bool, error)
 
 	GenerateIfupScripts(scriptPath string, nic jsonutils.JSONObject) error
 	GenerateIfdownScripts(scriptPath string, nic jsonutils.JSONObject) error
@@ -226,12 +229,11 @@ func (d *SBaseBridgeDriver) SetupSlaveAddresses(slaveAddrs [][]string) error {
 	return nil
 }
 
-func (d *SBaseBridgeDriver) SetupRoutes(routes [][]string) error {
+func (d *SBaseBridgeDriver) SetupRoutes(routespecs []iproute2.RouteSpec) error {
 	br := d.bridge.String()
 	r := iproute2.NewRoute(br)
-	for _, route := range routes {
-		netStr, maskStr, gwStr := route[0], route[2], route[1]
-		r.Add(netStr, maskStr, gwStr)
+	for _, routespec := range routespecs {
+		r.AddByRouteSpec(routespec)
 	}
 	if err := r.Err(); err != nil {
 		return errors.Wrapf(err, "set routes on %s", br)
@@ -240,10 +242,10 @@ func (d *SBaseBridgeDriver) SetupRoutes(routes [][]string) error {
 }
 
 func (d *SBaseBridgeDriver) Setup(o IBridgeDriver) error {
-	var routes [][]string
+	var routes []iproute2.RouteSpec
 	var slaveAddrs [][]string
 	if d.inter != nil && len(d.inter.Addr) > 0 {
-		routes = d.inter.GetRoutes(true)
+		routes = d.inter.GetRouteSpecs()
 		slaveAddrs = d.inter.GetSlaveAddresses()
 	}
 	exist, err := o.Exists()
@@ -325,6 +327,35 @@ func (d *SBaseBridgeDriver) GetMetadataServerPort() int {
 
 func (d *SBaseBridgeDriver) WarmupConfig() error {
 	return nil
+}
+
+func (d *SBaseBridgeDriver) DisableDHCPClient() (bool, error) {
+	if d.inter != nil {
+		filename := fmt.Sprintf("/var/run/dhclient-%s.pid", d.inter.String())
+		if !fileutils2.Exists(filename) {
+			return false, nil
+		}
+		s, err := fileutils2.FileGetContents(filename)
+		if err != nil {
+			return false, errors.Wrap(err, "get dhclient pid")
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return false, errors.Wrap(err, "convert pid str to int")
+		}
+		if fileutils2.Exists(fmt.Sprintf("/proc/%d/cmdline", pid)) {
+			cmdline, err := fileutils2.FileGetContents(fmt.Sprintf("/proc/%d/cmdline", pid))
+			if err != nil {
+				return false, errors.Wrap(err, "get proc cmdline")
+			}
+			if strings.Contains(cmdline, "dhclient") {
+				// kill process
+				p, _ := os.FindProcess(pid)
+				return true, p.Kill()
+			}
+		}
+	}
+	return false, nil
 }
 
 func NewDriver(bridgeDriver, bridge, inter, ip string) (IBridgeDriver, error) {

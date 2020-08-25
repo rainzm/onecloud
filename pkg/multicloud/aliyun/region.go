@@ -26,7 +26,6 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/regutils"
-	"yunion.io/x/pkg/util/secrules"
 	"yunion.io/x/pkg/utils"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -43,6 +42,8 @@ type SRegion struct {
 
 	RegionId  string
 	LocalName string
+
+	RegionEndpoint string
 
 	izones []cloudprovider.ICloudZone
 
@@ -106,7 +107,11 @@ func (self *SRegion) ecsRequest(apiName string, params map[string]string) (jsonu
 	if err != nil {
 		return nil, err
 	}
-	return jsonRequest(client, "ecs.aliyuncs.com", ALIYUN_API_VERSION, apiName, params, self.client.debug)
+	endpoint := self.RegionEndpoint
+	if len(endpoint) == 0 {
+		endpoint = "ecs.aliyuncs.com"
+	}
+	return jsonRequest(client, endpoint, ALIYUN_API_VERSION, apiName, params, self.client.debug)
 }
 
 func (self *SRegion) rdsRequest(apiName string, params map[string]string) (jsonutils.JSONObject, error) {
@@ -122,6 +127,7 @@ func (self *SRegion) vpcRequest(action string, params map[string]string) (jsonut
 	if err != nil {
 		return nil, err
 	}
+
 	return jsonRequest(client, "vpc.aliyuncs.com", ALIYUN_API_VERSION_VPC, action, params, self.client.debug)
 }
 
@@ -130,6 +136,7 @@ func (self *SRegion) kvsRequest(action string, params map[string]string) (jsonut
 	if err != nil {
 		return nil, err
 	}
+
 	return jsonRequest(client, "r-kvstore.aliyuncs.com", ALIYUN_API_VERSION_KVS, action, params, self.client.debug)
 }
 
@@ -762,8 +769,8 @@ func (region *SRegion) GetISecurityGroupById(secgroupId string) (cloudprovider.I
 	return secgroup, nil
 }
 
-func (region *SRegion) GetISecurityGroupByName(vpcId string, name string) (cloudprovider.ICloudSecurityGroup, error) {
-	secgroups, total, err := region.GetSecurityGroups(vpcId, name, []string{}, 0, 0)
+func (region *SRegion) GetISecurityGroupByName(opts *cloudprovider.SecurityGroupFilterOptions) (cloudprovider.ICloudSecurityGroup, error) {
+	secgroups, total, err := region.GetSecurityGroups(opts.VpcId, opts.Name, []string{}, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -782,26 +789,6 @@ func (region *SRegion) CreateISecurityGroup(conf *cloudprovider.SecurityGroupCre
 		return nil, err
 	}
 	return region.GetISecurityGroupById(externalId)
-}
-
-func (region *SRegion) SyncSecurityGroup(secgroupId string, vpcId string, name string, desc string, rules []secrules.SecurityRule) (string, error) {
-	if len(secgroupId) > 0 {
-		_, total, err := region.GetSecurityGroups("", "", []string{secgroupId}, 0, 1)
-		if err != nil {
-			return "", err
-		}
-		if total == 0 {
-			secgroupId = ""
-		}
-	}
-	if len(secgroupId) == 0 {
-		extID, err := region.CreateSecurityGroup(vpcId, name, desc)
-		if err != nil {
-			return "", err
-		}
-		secgroupId = extID
-	}
-	return secgroupId, region.syncSecgroupRules(secgroupId, rules)
 }
 
 func (region *SRegion) GetILoadBalancers() ([]cloudprovider.ICloudLoadbalancer, error) {
@@ -912,6 +899,10 @@ func (region *SRegion) CreateILoadBalancer(loadbalancer *cloudprovider.SLoadbala
 
 	if len(loadbalancer.ChargeType) > 0 {
 		params["InternetChargeType"] = "payby" + loadbalancer.ChargeType
+	}
+
+	if len(loadbalancer.ProjectId) > 0 {
+		params["ResourceGroupId"] = loadbalancer.ProjectId
 	}
 
 	if loadbalancer.ChargeType == api.LB_CHARGE_TYPE_BY_BANDWIDTH && loadbalancer.EgressMbps > 0 {

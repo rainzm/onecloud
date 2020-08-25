@@ -31,6 +31,8 @@ import (
 	schedmodels "yunion.io/x/onecloud/pkg/scheduler/models"
 )
 
+var ErrInstanceGroupNotFound = errors.Error("InstanceGroupNotFound")
+
 type BaseHostDesc struct {
 	*computemodels.SHost
 	Region        *computemodels.SCloudregion              `json:"region"`
@@ -47,7 +49,8 @@ type BaseHostDesc struct {
 	InstanceGroups map[string]*api.CandidateGroup `json:"instance_groups"`
 	IpmiInfo       types.SIPMIInfo                `json:"ipmi_info"`
 
-	SharedDomains []string `json:"shared_domains"`
+	SharedDomains []string               `json:"shared_domains"`
+	PendingUsage  map[string]interface{} `json:"pending_usage"`
 }
 
 type baseHostGetter struct {
@@ -127,7 +130,7 @@ func (b baseHostGetter) GetFreeGroupCount(groupId string) (int, error) {
 	// Must Be
 	scg, ok := b.h.InstanceGroups[groupId]
 	if !ok {
-		return 0, fmt.Errorf("No such Group id")
+		return 0, errors.Wrap(ErrInstanceGroupNotFound, groupId)
 	}
 	free := scg.Granularity - scg.ReferCount
 	if free < 1 {
@@ -267,6 +270,7 @@ func newBaseHostDesc(host *computemodels.SHost) (*BaseHostDesc, error) {
 	}
 
 	desc.fillSharedDomains()
+	desc.PendingUsage = desc.GetPendingUsage().ToMap()
 
 	return desc, nil
 }
@@ -422,8 +426,10 @@ func (b *BaseHostDesc) fillOnecloudVpcNetworks() error {
 	}
 	for i := range rows {
 		row := &rows[i]
+		net := &row.SNetwork
+		net.SetModelManager(computemodels.NetworkManager, net)
 		candidateNet := &api.CandidateNetwork{
-			SNetwork: &row.SNetwork,
+			SNetwork: net,
 			VpcId:    row.VpcId,
 			Provider: row.Provider,
 		}

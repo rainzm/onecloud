@@ -35,6 +35,7 @@ import (
 	"yunion.io/x/pkg/utils"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
+	identityapi "yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/hostman/guestfs/fsdriver"
 	"yunion.io/x/onecloud/pkg/hostman/host_health"
 	deployapi "yunion.io/x/onecloud/pkg/hostman/hostdeployer/apis"
@@ -45,7 +46,6 @@ import (
 	"yunion.io/x/onecloud/pkg/hostman/storageman"
 	"yunion.io/x/onecloud/pkg/hostman/system_service"
 	"yunion.io/x/onecloud/pkg/mcclient"
-	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modules"
 	"yunion.io/x/onecloud/pkg/util/cgrouputils"
 	"yunion.io/x/onecloud/pkg/util/fileutils2"
@@ -85,8 +85,12 @@ type SHostInfo struct {
 	Cloudregion    string
 	CloudregionId  string
 	ZoneManagerUri string
+	Project_domain string
+	Domain_id      string
 
-	FullName string
+	FullName   string
+	SysError   map[string]string
+	SysWarning map[string]string
 }
 
 func (h *SHostInfo) GetIsolatedDeviceManager() *isolated_device.IsolatedDeviceManager {
@@ -156,6 +160,7 @@ func (h *SHostInfo) Init() error {
 			return err
 		}
 	}
+
 	log.Infof("Start detectHostInfo")
 	if err := h.detectHostInfo(); err != nil {
 		return err
@@ -307,15 +312,6 @@ func (h *SHostInfo) prepareEnv() error {
 		return fmt.Errorf("Failed to create path %s", options.HostOptions.ServersPath)
 	}
 
-	if len(qemutils.GetQemu("")) == 0 {
-		return fmt.Errorf("Qemu not installed")
-	}
-
-	_, err = procutils.NewRemoteCommandAsFarAsPossible(qemutils.GetQemu(""), "-version").Output()
-	if err != nil {
-		return fmt.Errorf("Qemu/Kvm not installed")
-	}
-
 	_, err = procutils.NewCommand("ethtool", "-h").Output()
 	if err != nil {
 		return fmt.Errorf("Ethtool not installed")
@@ -419,13 +415,13 @@ func (h *SHostInfo) checkSystemServices() error {
 			srvinst.Start(false)
 		}
 	}
-	for _, srv := range []string{"telegraf", "ntpd"} {
+	for _, srv := range []string{"ntpd"} {
 		srvinst := system_service.GetService(srv)
 		funcEn(srv, srvinst)
 	}
 
 	svcs := os.Getenv("HOST_SYSTEM_SERVICES_OFF")
-	for _, srv := range []string{"host_sdnagent", "host-deployer"} {
+	for _, srv := range []string{"host_sdnagent", "host-deployer", "telegraf"} {
 		srvinst := system_service.GetService(srv)
 		if strings.Contains(svcs, srv) {
 			if srvinst.IsActive() || srvinst.IsEnabled() {
@@ -624,13 +620,25 @@ func (h *SHostInfo) detectSyssoftwareInfo() error {
 	h.detectOsDist()
 	h.detectKernelVersion()
 	if err := h.detectQemuVersion(); err != nil {
-		return err
+		h.SysError["qemu"] = err.Error()
 	}
 	h.detectOvsVersion()
+	if err := h.detectOvsKOVersion(); err != nil {
+		h.SysError["openvswitch"] = err.Error()
+	}
 	return nil
 }
 
 func (h *SHostInfo) detectQemuVersion() error {
+	if len(qemutils.GetQemu("")) == 0 {
+		return fmt.Errorf("Qemu not installed")
+	}
+
+	out, err := procutils.NewRemoteCommandAsFarAsPossible(qemutils.GetQemu(""), "-version").Output()
+	if err != nil {
+		return errors.Errorf("exec qemu version failed %s", out)
+	}
+
 	cmd := qemutils.GetQemu(options.HostOptions.DefaultQemuVersion)
 	version, err := procutils.NewRemoteCommandAsFarAsPossible(cmd, "--version").Output()
 	if err != nil {
@@ -665,6 +673,21 @@ func (h *SHostInfo) detectOvsVersion() {
 			log.Errorln("Failed to detect ovs version")
 		}
 	}
+}
+
+func (h *SHostInfo) detectOvsKOVersion() error {
+	output, err := procutils.NewRemoteCommandAsFarAsPossible("modinfo", "openvswitch").Output()
+	if err != nil {
+		return errors.Errorf("modinfo openvswitch failed %s", output)
+	}
+	lines := strings.Split(string(output), "\n")
+	for i := 0; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "version:") {
+			log.Infof("kernel module openvswitch %s", lines[i])
+			return nil
+		}
+	}
+	return errors.Errorf("kernel module openvswitch paramters version not found, is kernel version correct ??")
 }
 
 func (h *SHostInfo) GetMasterNicIpAndMask() (string, int) {
@@ -755,7 +778,7 @@ func (h *SHostInfo) tryCreateNetworkOnWire() {
 	params := jsonutils.NewDict()
 	params.Set("ip", jsonutils.NewString(masterIp))
 	params.Set("mask", jsonutils.NewInt(int64(mask)))
-	params.Set("is_on_premise", jsonutils.JSONTrue)
+	params.Set("is_classic", jsonutils.JSONTrue)
 	params.Set("server_type", jsonutils.NewString(api.NETWORK_TYPE_BAREMETAL))
 	ret, err := modules.Networks.PerformClassAction(
 		hostutils.GetComputeSession(context.Background()),
@@ -781,7 +804,11 @@ func (h *SHostInfo) fetchAccessNetworkInfo() {
 	log.Debugf("Master ip %s to fetch wire", masterIp)
 	params := jsonutils.NewDict()
 	params.Set("ip", jsonutils.NewString(masterIp))
+<<<<<<< HEAD
 	params.Set("is_on_premise", jsonutils.JSONTrue)
+=======
+	params.Set("is_classic", jsonutils.JSONTrue)
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	params.Set("scope", jsonutils.NewString("system"))
 	params.Set("limit", jsonutils.NewInt(0))
 	// use default vpc
@@ -857,8 +884,21 @@ func (h *SHostInfo) getHostInfo(zoneId string) {
 	} else {
 		host := res.Data[0]
 		id, _ := host.GetString("id")
+		h.getDomainInfo(id)
+
 		h.updateHostRecord(id)
 	}
+}
+
+func (h *SHostInfo) getDomainInfo(hostId string) {
+	host, err := modules.Hosts.GetById(h.GetSession(), hostId, jsonutils.NewDict())
+	if err != nil {
+		h.onFail(err)
+	}
+	domain_id, _ := host.GetString("domain_id")
+	project_domain, _ := host.GetString("project_domain")
+	h.Domain_id = domain_id
+	h.Project_domain = project_domain
 }
 
 func (h *SHostInfo) setHostname(name string) {
@@ -976,8 +1016,14 @@ func (h *SHostInfo) updateHostMetadata(hostname string) error {
 		OnKubernetes: onK8s,
 		Hostname:     hostname,
 	}
-
-	_, err := modules.Hosts.SetMetadata(h.GetSession(), h.HostId, meta.JSON(meta))
+	if len(h.SysError) > 0 {
+		meta.SysError = jsonutils.Marshal(h.SysError).String()
+	}
+	if len(h.SysWarning) > 0 {
+		meta.SysWarn = jsonutils.Marshal(h.SysWarning).String()
+	}
+	data := meta.JSON(meta)
+	_, err := modules.Hosts.SetMetadata(h.GetSession(), h.HostId, data)
 	return err
 }
 
@@ -1055,6 +1101,14 @@ func (h *SHostInfo) PutHostOffline() {
 }
 
 func (h *SHostInfo) PutHostOnline() error {
+	if len(h.SysError) > 0 {
+		log.Fatalf("Can't put host online, unless resolve these problem %v", h.SysError)
+	}
+
+	if len(h.SysWarning) > 0 {
+		log.Warningf("Host have some hidden problem %v", h.SysWarning)
+	}
+
 	data := jsonutils.NewDict()
 	if options.HostOptions.EnableHealthChecker && len(options.HostOptions.EtcdEndpoints) > 0 {
 		_, err := host_health.InitHostHealthManager(h.HostId, h.onHostDown)
@@ -1073,6 +1127,7 @@ func (h *SHostInfo) getNetworkInfo() {
 	params := jsonutils.NewDict()
 	params.Set("details", jsonutils.JSONTrue)
 	params.Set("limit", jsonutils.NewInt(0))
+	params.Set("scope", jsonutils.NewString("system"))
 	res, err := modules.Hostwires.ListDescendent(
 		h.GetSession(),
 		h.HostId, params)
@@ -1106,7 +1161,11 @@ func (h *SHostInfo) uploadNetworkInfo() {
 			if len(nic.Network) == 0 {
 				kwargs := jsonutils.NewDict()
 				kwargs.Set("ip", jsonutils.NewString(nic.Ip))
+<<<<<<< HEAD
 				kwargs.Set("is_on_premise", jsonutils.JSONTrue)
+=======
+				kwargs.Set("is_classic", jsonutils.JSONTrue)
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 				kwargs.Set("scope", jsonutils.NewString("system"))
 				kwargs.Set("limit", jsonutils.NewInt(0))
 
@@ -1228,6 +1287,7 @@ func (h *SHostInfo) getStorageInfo() {
 	params := jsonutils.NewDict()
 	params.Set("details", jsonutils.JSONTrue)
 	params.Set("limit", jsonutils.NewInt(0))
+	params.Set("scope", jsonutils.NewString("system"))
 	res, err := modules.Hoststorages.ListDescendent(
 		h.GetSession(),
 		h.HostId, params)
@@ -1257,8 +1317,13 @@ func (h *SHostInfo) onGetStorageInfoSucc(hoststorages []jsonutils.JSONObject) {
 			storage := storageManager.NewSharedStorageInstance(mountPoint, storagetype)
 			if storage != nil {
 				storage.SetStoragecacheId(storagecacheId)
-				storage.SetStorageInfo(storageId, storageName, storageConf)
+				if err := storage.SetStorageInfo(storageId, storageName, storageConf); err != nil {
+					h.onFail(err)
+				}
 				storageManager.Storages = append(storageManager.Storages, storage)
+				if err := storage.Accessible(); err != nil {
+					h.onFail(err)
+				}
 				storageManager.InitSharedStorageImageCache(
 					storagetype, storagecacheId, imagecachePath, storage)
 			}
@@ -1267,7 +1332,9 @@ func (h *SHostInfo) onGetStorageInfoSucc(hoststorages []jsonutils.JSONObject) {
 			storage := storageManager.GetStorageByPath(mountPoint)
 			if storage != nil {
 				storage.SetStoragecacheId(storagecacheId)
-				storage.SetStorageInfo(storageId, storageName, storageConf)
+				if err := storage.SetStorageInfo(storageId, storageName, storageConf); err != nil {
+					h.onFail(err)
+				}
 			} else {
 				// XXX hack: storage type baremetal is a converted host，reserve storage
 				if storagetype != api.STORAGE_BAREMETAL {
@@ -1301,7 +1368,9 @@ func (h *SHostInfo) onSyncStorageInfoSucc(storage storageman.IStorage, storageIn
 		id, _ := storageInfo.GetString("id")
 		name, _ := storageInfo.GetString("name")
 		storageConf, _ := storageInfo.Get("storage_conf")
-		storage.SetStorageInfo(id, name, storageConf)
+		if err := storage.SetStorageInfo(id, name, storageConf); err != nil {
+			h.onFail(err)
+		}
 		h.attachStorage(storage)
 	}
 }
@@ -1332,7 +1401,9 @@ func (h *SHostInfo) getIsolatedDevices() {
 func (h *SHostInfo) onGetIsolatedDeviceSucc(objs []jsonutils.JSONObject) {
 	for _, obj := range objs {
 		info := isolated_device.CloudDeviceInfo{}
-		obj.Unmarshal(&info)
+		if err := obj.Unmarshal(&info); err != nil {
+			h.onFail(fmt.Sprintf("unmarshal isolated device to cloud device info failed %s", err))
+		}
 		dev := h.IsolatedDeviceMan.GetDeviceByIdent(info.VendorDeviceId, info.Addr)
 		if dev != nil {
 			dev.SetDeviceInfo(info)
@@ -1364,18 +1435,17 @@ func (h *SHostInfo) deployAdminAuthorizedKeys() {
 	}
 
 	sshDir := path.Join("/root", ".ssh")
-	if _, err := os.Stat(sshDir); err != nil {
-		if os.IsNotExist(err) {
-			if err := os.MkdirAll(sshDir, 0755); err != nil {
-				onErr("Create ssh dir %s: %v", sshDir, err)
-			}
-		} else {
-			onErr("Stat %s dir: %v", sshDir, err)
-		}
+	output, err := procutils.NewRemoteCommandAsFarAsPossible("mkdir", "-p", sshDir).Output()
+	if err != nil {
+		onErr("mkdir .ssh failed %s %s", output, err)
 	}
 
 	query := jsonutils.NewDict()
+<<<<<<< HEAD
 	query.Add(jsonutils.NewString("system"), "scope")
+=======
+	query.Set("admin", jsonutils.JSONTrue)
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	ret, err := modules.Sshkeypairs.List(h.GetSession(), query)
 	if err != nil {
 		onErr("Get admin sshkey: %v", err)
@@ -1387,15 +1457,23 @@ func (h *SHostInfo) deployAdminAuthorizedKeys() {
 	adminPublicKey, _ := keys.GetString("public_key")
 	pubKeys := &deployapi.SSHKeys{AdminPublicKey: adminPublicKey}
 
+	var oldKeys string
 	authFile := path.Join(sshDir, "authorized_keys")
-	oldKeysBytes, _ := fileutils2.FileGetContents(authFile)
-	oldKeys := string(oldKeysBytes)
-	newKeys := fsdriver.MergeAuthorizedKeys(oldKeys, pubKeys)
-	if err := fileutils2.FilePutContents(authFile, newKeys, false); err != nil {
-		onErr("Write public keys: %v", err)
+	if procutils.NewRemoteCommandAsFarAsPossible("test", "-f", authFile).Run() == nil {
+		output, err := procutils.NewRemoteCommandAsFarAsPossible("cat", authFile).Output()
+		if err != nil {
+			onErr("cat auth file %s %s", output, err)
+		}
+		oldKeys = string(output)
 	}
-	if err := os.Chmod(authFile, 0644); err != nil {
-		onErr("Chmod %s to 0644: %v", authFile, err)
+	newKeys := fsdriver.MergeAuthorizedKeys(oldKeys, pubKeys)
+	if output, err := procutils.NewRemoteCommandAsFarAsPossible(
+		"sh", "-c", fmt.Sprintf("echo '%s' > %s", newKeys, authFile)).Output(); err != nil {
+		onErr("write public keys: %s %s", output, err)
+	}
+	if output, err := procutils.NewRemoteCommandAsFarAsPossible(
+		"chmod", "0644", authFile).Output(); err != nil {
+		onErr("chmod failed %s %s", output, err)
 	}
 	h.onSucc()
 }
@@ -1495,7 +1573,7 @@ func (h *SHostInfo) OnCatalogChanged(catalog mcclient.KeystoneServiceCatalogV3) 
 	// TODO: dynamic probe endpoint type
 	defaultEndpointType := options.HostOptions.SessionEndpointType
 	if len(defaultEndpointType) == 0 {
-		defaultEndpointType = auth.PublicEndpointType
+		defaultEndpointType = identityapi.EndpointInterfacePublic
 	}
 	if options.HostOptions.ManageNtpConfiguration {
 		ntpd := system_service.GetService("ntpd")
@@ -1523,10 +1601,13 @@ func (h *SHostInfo) OnCatalogChanged(catalog mcclient.KeystoneServiceCatalogV3) 
 		"zone":           h.Zone,
 		"cloudregion_id": h.CloudregionId,
 		"cloudregion":    h.Cloudregion,
+		"domain_id":      h.Domain_id,
+		"project_domain": h.Project_domain,
 		"region":         options.HostOptions.Region,
 		"host_ip":        h.GetMasterIp(),
-		"platform":       "kvm",
-		"res_type":       "host",
+		//"platform":       "kvm",
+		"brand":    "OneCloud",
+		"res_type": "host",
 	}
 	conf["nics"] = h.getNicsTelegrafConf()
 	urls, _ := catalog.GetServiceURLs("kafka", options.HostOptions.Region, "", defaultEndpointType)
@@ -1540,7 +1621,12 @@ func (h *SHostInfo) OnCatalogChanged(catalog mcclient.KeystoneServiceCatalogV3) 
 	log.Debugf("telegraf config: %s", conf)
 	if !reflect.DeepEqual(telegraf.GetConf(), conf) || !telegraf.IsActive() {
 		telegraf.SetConf(conf)
-		telegraf.BgReload(conf)
+		svcs := os.Getenv("HOST_SYSTEM_SERVICES_OFF")
+		if !strings.Contains(svcs, "telegraf") {
+			telegraf.BgReload(conf)
+		} else {
+			telegraf.BgReloadConf(conf)
+		}
 	}
 
 	urls, _ = catalog.GetServiceURLs("elasticsearch",
@@ -1610,6 +1696,8 @@ func NewHostInfo() (*SHostInfo, error) {
 
 	res.Nics = make([]*SNIC, 0)
 	res.IsRegistered = make(chan struct{})
+	res.SysError = make(map[string]string)
+	res.SysWarning = make(map[string]string)
 	return res, nil
 }
 

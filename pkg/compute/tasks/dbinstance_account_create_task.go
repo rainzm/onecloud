@@ -40,8 +40,8 @@ func init() {
 func (self *DBInstanceAccountCreateTask) taskFailed(ctx context.Context, account *models.SDBInstanceAccount, err error) {
 	account.SetStatus(self.UserCred, api.DBINSTANCE_USER_CREATE_FAILED, err.Error())
 	db.OpsLog.LogEvent(account, db.ACT_CREATE, err.Error(), self.GetUserCred())
-	logclient.AddActionLogWithStartable(self, account, logclient.ACT_CREATE, err.Error(), self.UserCred, false)
-	self.SetStageFailed(ctx, err.Error())
+	logclient.AddActionLogWithStartable(self, account, logclient.ACT_CREATE, err, self.UserCred, false)
+	self.SetStageFailed(ctx, jsonutils.Marshal(err))
 }
 
 func (self *DBInstanceAccountCreateTask) OnInit(ctx context.Context, obj db.IStandaloneModel, data jsonutils.JSONObject) {
@@ -123,7 +123,7 @@ func (self *DBInstanceAccountCreateTask) CreateDBInstanceAccount(ctx context.Con
 			DBInstanceaccountId:  account.Id,
 			DBInstancedatabaseId: privilege.DBInstancedatabaseId,
 		}
-		models.DBInstancePrivilegeManager.TableSpec().Insert(&_privilege)
+		models.DBInstancePrivilegeManager.TableSpec().Insert(ctx, &_privilege)
 		logclient.AddActionLogWithStartable(self, account, logclient.ACT_GRANT_PRIVILEGE, privilege, self.UserCred, true)
 	}
 

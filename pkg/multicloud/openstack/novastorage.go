@@ -24,6 +24,7 @@ import (
 )
 
 type SNovaStorage struct {
+	host *SHypervisor
 	zone *SZone
 }
 
@@ -32,7 +33,7 @@ func (storage *SNovaStorage) GetMetadata() *jsonutils.JSONDict {
 }
 
 func (storage *SNovaStorage) GetId() string {
-	return fmt.Sprintf("%s-%s-%s", storage.zone.region.client.cpcfg.Id, storage.zone.GetGlobalId(), storage.GetName())
+	return fmt.Sprintf("%s-%s-%s", storage.zone.GetGlobalId(), storage.host.GetId(), storage.GetName())
 }
 
 func (storage *SNovaStorage) GetName() string {
@@ -64,7 +65,7 @@ func (storage *SNovaStorage) GetMediumType() string {
 }
 
 func (storage *SNovaStorage) GetCapacityMB() int64 {
-	return 1000000000
+	return int64(storage.host.GetStorageSizeMB())
 }
 
 func (storage *SNovaStorage) GetStorageConf() jsonutils.JSONObject {
@@ -89,26 +90,12 @@ func (storage *SNovaStorage) GetIStoragecache() cloudprovider.ICloudStoragecache
 	return storage.zone.region.getStoragecache()
 }
 
-func (storage *SNovaStorage) CreateIDisk(name string, sizeGb int, desc string) (cloudprovider.ICloudDisk, error) {
+func (storage *SNovaStorage) CreateIDisk(conf *cloudprovider.DiskCreateConfig) (cloudprovider.ICloudDisk, error) {
 	return nil, cloudprovider.ErrNotSupported
 }
 
 func (storage *SNovaStorage) GetIDiskById(idStr string) (cloudprovider.ICloudDisk, error) {
-	instance, err := storage.zone.region.GetInstance(idStr)
-	if err != nil {
-		return nil, err
-	}
-	disk := SDisk{
-		ID:         instance.ID,
-		Name:       fmt.Sprintf("root disk for %s", instance.Name),
-		Size:       instance.Flavor.Disk,
-		Status:     DISK_STATUS_IN_USE,
-		Bootable:   true,
-		CreatedAt:  instance.Created,
-		VolumeType: api.STORAGE_OPENSTACK_NOVA,
-	}
-	disk.nova = storage
-	return &disk, nil
+	return &SNovaDisk{region: storage.zone.region, storage: storage, instanceId: idStr}, nil
 }
 
 func (storage *SNovaStorage) GetMountPoint() string {

@@ -62,14 +62,6 @@ func (manager *SGroupguestManager) GetSlaveFieldName() string {
 	return "guest_id"
 }
 
-func (joint *SGroupguest) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SGroupguest) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
-}
-
 func (self *SGroupguest) GetExtraDetails(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -148,7 +140,7 @@ func (self *SGroupguestManager) Attach(ctx context.Context, groupId, guestId str
 	joint.GuestId = guestId
 	joint.GroupId = groupId
 
-	err := self.TableSpec().Insert(joint)
+	err := self.TableSpec().Insert(ctx, joint)
 	if err != nil {
 		return nil, err
 	}

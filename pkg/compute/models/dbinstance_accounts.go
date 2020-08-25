@@ -179,13 +179,37 @@ func (manager *SDBInstanceAccountManager) FetchCustomizeColumns(
 	rows := make([]api.DBInstanceAccountDetails, len(objs))
 	stdRows := manager.SStatusStandaloneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	dbRows := manager.SDBInstanceResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	dbinstanceIds := make([]string, len(objs))
 	for i := range rows {
 		rows[i] = api.DBInstanceAccountDetails{
 			StatusStandaloneResourceDetails: stdRows[i],
 			DBInstanceResourceInfo:          dbRows[i],
 		}
-		rows[i], _ = objs[i].(*SDBInstanceAccount).getMoreDetails(ctx, userCred, rows[i])
+		account := objs[i].(*SDBInstanceAccount)
+		rows[i], _ = account.getMoreDetails(ctx, userCred, rows[i])
+		dbinstanceIds[i] = account.DBInstanceId
 	}
+
+	dbinstances := make(map[string]SDBInstance)
+	err := db.FetchStandaloneObjectsByIds(DBInstanceManager, dbinstanceIds, &dbinstances)
+	if err != nil {
+		log.Errorf("FetchStandaloneObjectsByIds fail: %v", err)
+		return rows
+	}
+
+	virObjs := make([]interface{}, len(objs))
+	for i := range rows {
+		if dbinstance, ok := dbinstances[dbinstanceIds[i]]; ok {
+			virObjs[i] = &dbinstance
+			rows[i].ProjectId = dbinstance.ProjectId
+		}
+	}
+
+	projRows := DBInstanceManager.SProjectizedResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, virObjs, stringutils2.SSortedStrings{}, isList)
+	for i := range rows {
+		rows[i].ProjectizedResourceInfo = projRows[i]
+	}
+
 	return rows
 }
 
@@ -657,7 +681,7 @@ func (manager *SDBInstanceAccountManager) newFromCloudDBInstanceAccount(ctx cont
 	account.Status = extAccount.GetStatus()
 	account.ExternalId = extAccount.GetGlobalId()
 
-	err := manager.TableSpec().Insert(&account)
+	err := manager.TableSpec().Insert(ctx, &account)
 	if err != nil {
 		return nil, errors.Wrapf(err, "newFromCloudDBInstanceAccount.Insert")
 	}

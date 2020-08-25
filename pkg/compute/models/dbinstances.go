@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/compare"
 	"yunion.io/x/pkg/util/netutils"
 	"yunion.io/x/pkg/utils"
@@ -38,9 +39,11 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
+	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/billing"
+	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/seclib2"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -173,11 +176,11 @@ func (man *SDBInstanceManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SVpcResourceBaseManager.ListItemFilter")
 	}
 
-	if len(query.Zone) > 0 {
-		zoneObj, err := ZoneManager.FetchByIdOrName(userCred, query.Zone)
+	if len(query.ZoneId) > 0 {
+		zoneObj, err := ZoneManager.FetchByIdOrName(userCred, query.ZoneId)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
-				return nil, httperrors.NewResourceNotFoundError2(ZoneManager.Keyword(), query.Zone)
+				return nil, httperrors.NewResourceNotFoundError2(ZoneManager.Keyword(), query.ZoneId)
 			} else {
 				return nil, errors.Wrap(err, "ZoneManager.FetchByIdOrName")
 			}
@@ -352,11 +355,20 @@ func (man *SDBInstanceManager) ValidateCreateData(ctx context.Context, userCred 
 		if err != nil {
 			return nil, httperrors.NewInputParameterError("invalid duration %s", input.Duration)
 		}
-		if !region.GetDriver().IsSupportedBillingCycle(billingCycle, man.KeywordPlural()) {
-			return nil, httperrors.NewInputParameterError("unsupported duration %s", input.Duration)
+
+		if !utils.IsInStringArray(input.BillingType, []string{billing_api.BILLING_TYPE_PREPAID, billing_api.BILLING_TYPE_POSTPAID}) {
+			input.BillingType = billing_api.BILLING_TYPE_PREPAID
 		}
-		input.BillingType = billing_api.BILLING_TYPE_PREPAID
+
+		if input.BillingType == billing_api.BILLING_TYPE_PREPAID {
+			if !region.GetDriver().IsSupportedBillingCycle(billingCycle, man.KeywordPlural()) {
+				return nil, httperrors.NewInputParameterError("unsupported duration %s", input.Duration)
+			}
+		}
+
+		tm := time.Time{}
 		input.BillingCycle = billingCycle.String()
+		input.ExpiredAt = billingCycle.EndAt(tm)
 	}
 
 	if len(input.InstanceType) == 0 && (input.VcpuCount == 0 || input.VmemSizeMb == 0) {
@@ -675,22 +687,19 @@ func (self *SDBInstance) AllowPerformRecovery(ctx context.Context, userCred mccl
 	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "recovery")
 }
 
-func (self *SDBInstance) PerformRecovery(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SDBInstance) PerformRecovery(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input api.SDBInstanceRecoveryConfigInput) (jsonutils.JSONObject, error) {
 	if !utils.IsInStringArray(self.Status, []string{api.DBINSTANCE_RUNNING}) {
 		return nil, httperrors.NewInvalidStatusError("Cannot do recovery dbinstance in status %s required status %s", self.Status, api.DBINSTANCE_RUNNING)
 	}
 
-	params := data.(*jsonutils.JSONDict)
-	backupV := validators.NewModelIdOrNameValidator("dbinstancebackup", "dbinstancebackup", userCred)
-	err := backupV.Validate(params)
+	_backup, err := DBInstanceBackupManager.FetchByIdOrName(userCred, input.DBInstancebackupId)
 	if err != nil {
-		return nil, err
+		if errors.Cause(err) == sql.ErrNoRows {
+			return nil, httperrors.NewResourceNotFoundError2("dbinstancebackup", input.DBInstancebackupId)
+		}
+		return nil, httperrors.NewGeneralError(err)
 	}
-	input := &api.SDBInstanceRecoveryConfigInput{}
-	err = params.Unmarshal(input)
-	if err != nil {
-		return nil, httperrors.NewInputParameterError("Failed to unmarshal input config: %v", err)
-	}
+	input.DBInstancebackupId = _backup.GetId()
 
 	databases, err := self.GetDBInstanceDatabases()
 	if err != nil {
@@ -702,7 +711,7 @@ func (self *SDBInstance) PerformRecovery(ctx context.Context, userCred mcclient.
 		dbDatabases = append(dbDatabases, database.Name)
 	}
 
-	backup := backupV.Model.(*SDBInstanceBackup)
+	backup := _backup.(*SDBInstanceBackup)
 	for src, dest := range input.Databases {
 		if len(dest) == 0 {
 			dest = src
@@ -723,6 +732,20 @@ func (self *SDBInstance) PerformRecovery(ctx context.Context, userCred mcclient.
 
 	if backup.CloudregionId != self.CloudregionId {
 		return nil, httperrors.NewInputParameterError("backup and instance not in same cloudregion")
+	}
+
+	if len(backup.Engine) > 0 && backup.Engine != self.Engine {
+		return nil, httperrors.NewInputParameterError("can not recover data from diff rds engine")
+	}
+
+	driver, err := self.GetRegionDriver()
+	if err != nil {
+		return nil, httperrors.NewGeneralError(err)
+	}
+
+	err = driver.ValidateDBInstanceRecovery(ctx, userCred, self, backup, input)
+	if err != nil {
+		return nil, err
 	}
 
 	return nil, self.StartDBInstanceRecoveryTask(ctx, userCred, input.JSON(input), "")
@@ -1236,12 +1259,16 @@ func (manager *SDBInstanceManager) SyncDBInstanceMasterId(ctx context.Context, u
 	for _, instance := range cloudDBInstances {
 		masterId := instance.GetMasterInstanceId()
 		if len(masterId) > 0 {
-			master, err := db.FetchByExternalId(manager, masterId)
+			master, err := db.FetchByExternalIdAndManagerId(manager, masterId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", provider.Id)
+			})
 			if err != nil {
 				log.Errorf("failed to found master dbinstance by externalId: %s error: %v", masterId, err)
 				continue
 			}
-			slave, err := db.FetchByExternalId(manager, instance.GetGlobalId())
+			slave, err := db.FetchByExternalIdAndManagerId(manager, instance.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", provider.Id)
+			})
 			if err != nil {
 				log.Errorf("failed to found local dbinstance by externalId %s error: %v", instance.GetGlobalId(), err)
 				continue
@@ -1296,7 +1323,7 @@ func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred
 			syncResult.UpdateError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, &commondb[i], commonext[i])
+		syncVirtualResourceMetadata(ctx, userCred, &commondb[i], commonext[i])
 		localDBInstances = append(localDBInstances, commondb[i])
 		remoteDBInstances = append(remoteDBInstances, commonext[i])
 		syncResult.Update()
@@ -1308,7 +1335,7 @@ func (manager *SDBInstanceManager) SyncDBInstances(ctx context.Context, userCred
 			syncResult.AddError(err)
 			continue
 		}
-		syncMetadata(ctx, userCred, instance, added[i])
+		syncVirtualResourceMetadata(ctx, userCred, instance, added[i])
 		localDBInstances = append(localDBInstances, *instance)
 		remoteDBInstances = append(remoteDBInstances, added[i])
 		syncResult.Add()
@@ -1320,9 +1347,12 @@ func (self *SDBInstance) syncRemoveCloudDBInstance(ctx context.Context, userCred
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
 
+	self.SetDisableDelete(userCred, false)
+
 	err := self.ValidateDeleteCondition(ctx)
 	if err != nil { // cannot delete
-		return self.SetStatus(userCred, api.VPC_STATUS_UNKNOWN, "sync to delete")
+		self.SetStatus(userCred, api.VPC_STATUS_UNKNOWN, "sync to delete")
+		return errors.Wrap(err, "ValidateDeleteCondition")
 	}
 	return self.RealDelete(ctx, userCred)
 }
@@ -1492,7 +1522,9 @@ func (self *SDBInstance) SyncWithCloudDBInstance(ctx context.Context, userCred m
 
 		if len(self.VpcId) == 0 {
 			if vpcId := extInstance.GetIVpcId(); len(vpcId) > 0 {
-				vpc, err := db.FetchByExternalId(VpcManager, vpcId)
+				vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+					return q.Equals("manager_id", provider.Id)
+				})
 				if err != nil {
 					return errors.Wrapf(err, "SyncWithCloudDBInstance.FetchVpcId")
 				}
@@ -1577,7 +1609,9 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 	}
 
 	if vpcId := extInstance.GetIVpcId(); len(vpcId) > 0 {
-		vpc, err := db.FetchByExternalId(VpcManager, vpcId)
+		vpc, err := db.FetchByExternalIdAndManagerId(VpcManager, vpcId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+			return q.Equals("manager_id", provider.Id)
+		})
 		if err != nil {
 			return nil, errors.Wrapf(err, "newFromCloudDBInstance.FetchVpcId")
 		}
@@ -1599,7 +1633,7 @@ func (manager *SDBInstanceManager) newFromCloudDBInstance(ctx context.Context, u
 		instance.AutoRenew = extInstance.IsAutoRenew()
 	}
 
-	err = manager.TableSpec().Insert(&instance)
+	err = manager.TableSpec().Insert(ctx, &instance)
 	if err != nil {
 		return nil, errors.Wrapf(err, "newFromCloudDBInstance.Insert")
 	}
@@ -1620,7 +1654,7 @@ func (man *SDBInstanceManager) TotalCount(
 	q := man.Query()
 	q = scopeOwnerIdFilter(q, scope, ownerId)
 	q = CloudProviderFilter(q, q.Field("manager_id"), providers, brands, cloudEnv)
-	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"))
+	q = RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 	return q.CountWithError()
 }
 
@@ -1652,7 +1686,7 @@ func (dbinstance *SDBInstance) GetIRegion() (cloudprovider.ICloudRegion, error) 
 	}
 	provider, err := dbinstance.GetDriver()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "dbinstance.GetDriver")
 	}
 	return provider.GetIRegionById(region.GetExternalId())
 }
@@ -1691,4 +1725,118 @@ func (manager *SDBInstanceManager) ListItemExportKeys(ctx context.Context,
 	}
 
 	return q, nil
+}
+
+func (manager *SDBInstanceManager) getExpiredPostpaids() []SDBInstance {
+	q := ListExpiredPostpaidResources(manager.Query(), options.Options.ExpiredPrepaidMaxCleanBatchSize)
+	q = q.IsFalse("pending_deleted")
+
+	dbs := make([]SDBInstance, 0)
+	err := db.FetchModelObjects(DBInstanceManager, q, &dbs)
+	if err != nil {
+		log.Errorf("fetch dbinstances error %s", err)
+		return nil
+	}
+
+	return dbs
+}
+
+func (cache *SDBInstance) SetDisableDelete(userCred mcclient.TokenCredential, val bool) error {
+	diff, err := db.Update(cache, func() error {
+		if val {
+			cache.DisableDelete = tristate.True
+		} else {
+			cache.DisableDelete = tristate.False
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	db.OpsLog.LogEvent(cache, db.ACT_UPDATE, diff, userCred)
+	logclient.AddSimpleActionLog(cache, logclient.ACT_UPDATE, diff, userCred, true)
+	return err
+}
+
+func (self *SDBInstance) doExternalSync(ctx context.Context, userCred mcclient.TokenCredential) error {
+	provider := self.GetCloudprovider()
+	if provider != nil {
+		return fmt.Errorf("no cloud provider???")
+	}
+
+	iregion, err := self.GetIRegion()
+	if err != nil || iregion == nil {
+		return fmt.Errorf("no cloud region??? %s", err)
+	}
+
+	idbs, err := iregion.GetIDBInstanceById(self.ExternalId)
+	if err != nil {
+		return err
+	}
+	return self.SyncWithCloudDBInstance(ctx, userCred, provider, idbs)
+}
+
+func (manager *SDBInstanceManager) DeleteExpiredPostpaids(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	dbs := manager.getExpiredPostpaids()
+	if dbs == nil {
+		return
+	}
+	for i := 0; i < len(dbs); i += 1 {
+		if len(dbs[i].ExternalId) > 0 {
+			err := dbs[i].doExternalSync(ctx, userCred)
+			if err == nil && dbs[i].IsValidPostPaid() {
+				continue
+			}
+		}
+		dbs[i].SetDisableDelete(userCred, false)
+		dbs[i].StartDBInstanceDeleteTask(ctx, userCred, jsonutils.NewDict(), "")
+	}
+}
+
+func (self *SDBInstance) AllowPerformPostpaidExpire(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "postpaid-expire")
+}
+
+func (self *SDBInstance) PerformPostpaidExpire(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	if self.BillingType != billing_api.BILLING_TYPE_POSTPAID {
+		return nil, httperrors.NewBadRequestError("dbinstance billing type is %s", self.BillingType)
+	}
+
+	bc, err := ParseBillingCycleInput(&self.SBillingResourceBase, data)
+	if err != nil {
+		return nil, err
+	}
+
+	err = self.SaveRenewInfo(ctx, userCred, bc, nil, billing_api.BILLING_TYPE_POSTPAID)
+	return nil, err
+}
+
+func (self *SDBInstance) AllowPerformCancelExpire(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return self.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, self, "cancel-expire")
+}
+
+func (self *SDBInstance) PerformCancelExpire(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	if err := self.CancelExpireTime(ctx, userCred); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func (self *SDBInstance) CancelExpireTime(ctx context.Context, userCred mcclient.TokenCredential) error {
+	if self.BillingType != billing_api.BILLING_TYPE_POSTPAID {
+		return httperrors.NewBadRequestError("dbinstance billing type %s not support cancel expire", self.BillingType)
+	}
+
+	_, err := sqlchemy.GetDB().Exec(
+		fmt.Sprintf(
+			"update %s set expired_at = NULL and billing_cycle = NULL where id = ?",
+			DBInstanceManager.TableSpec().Name(),
+		), self.Id,
+	)
+	if err != nil {
+		return errors.Wrap(err, "dbinstance cancel expire time")
+	}
+	db.OpsLog.LogEvent(self, db.ACT_RENEW, "dbinstance cancel expire time", userCred)
+	return nil
 }

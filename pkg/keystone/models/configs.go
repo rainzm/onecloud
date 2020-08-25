@@ -15,6 +15,7 @@
 package models
 
 import (
+	"context"
 	"database/sql"
 	"sort"
 
@@ -88,20 +89,22 @@ type SConfigOption struct {
 }
 
 func (manager *SConfigOptionManager) fetchConfigs(model db.IModel, groups []string, options []string) (TConfigOptions, error) {
-	q := manager.Query().Equals("res_type", model.Keyword()).Equals("domain_id", model.GetId())
+	return manager.fetchConfigs2(model.Keyword(), model.GetId(), groups, options)
+}
+
+func (manager *SConfigOptionManager) fetchConfigs2(resType string, resId string, groups []string, options []string) (TConfigOptions, error) {
+	q := manager.Query()
+	if len(resType) > 0 {
+		q = q.Equals("res_type", resType)
+	}
+	if len(resId) > 0 {
+		q = q.Equals("domain_id", resId)
+	}
 	if len(groups) > 0 {
-		if len(groups) == 1 {
-			q = q.Equals("group", groups[0])
-		} else {
-			q = q.In("group", groups)
-		}
+		q = q.In("group", groups)
 	}
 	if len(options) > 0 {
-		if len(options) == 1 {
-			q = q.Equals("option", options[0])
-		} else {
-			q = q.In("option", options)
-		}
+		q = q.In("option", options)
 	}
 	opts := make(TConfigOptions, 0)
 	err := db.FetchModelObjects(manager, q, &opts)
@@ -130,7 +133,7 @@ func (manager *SConfigOptionManager) deleteConfigs(model db.IModel) error {
 
 func (manager *SConfigOptionManager) updateConfigs(newOpts TConfigOptions) error {
 	for i := range newOpts {
-		err := manager.TableSpec().InsertOrUpdate(&newOpts[i])
+		err := manager.TableSpec().InsertOrUpdate(context.Background(), &newOpts[i])
 		if err != nil {
 			return errors.Wrap(err, "Insert")
 		}
@@ -179,7 +182,7 @@ func (manager *SConfigOptionManager) syncConfigs(model db.IModel, newOpts TConfi
 		}
 	}
 	for i := range added {
-		err = manager.TableSpec().InsertOrUpdate(&added[i])
+		err = manager.TableSpec().InsertOrUpdate(context.TODO(), &added[i])
 		if err != nil {
 			return errors.Wrap(err, "Insert")
 		}
@@ -212,16 +215,18 @@ func getConfigOptions(conf api.TConfigs, model db.IModel, sensitiveList map[stri
 	sensitive := make(TConfigOptions, 0)
 	for group, groupConf := range conf {
 		for optKey, optVal := range groupConf {
-			opt := SConfigOption{}
-			opt.ResType = model.Keyword()
-			opt.ResId = model.GetId()
-			opt.Group = group
-			opt.Option = optKey
-			opt.Value = optVal
+			opt := &SConfigOption{
+				ResType: model.Keyword(),
+				ResId:   model.GetId(),
+				Group:   group,
+				Option:  optKey,
+				Value:   optVal,
+			}
+			opt.SetModelManager(WhitelistedConfigManager, opt)
 			if v, ok := sensitiveList[group]; ok && utils.IsInStringArray(optKey, v) {
-				sensitive = append(sensitive, opt)
+				sensitive = append(sensitive, *opt)
 			} else {
-				options = append(options, opt)
+				options = append(options, *opt)
 			}
 		}
 	}

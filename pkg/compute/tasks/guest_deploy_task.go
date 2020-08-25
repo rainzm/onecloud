@@ -35,18 +35,21 @@ type GuestDeployTask struct {
 func (self *GuestDeployTask) OnInit(ctx context.Context, obj db.IStandaloneModel, data jsonutils.JSONObject) {
 	guest := obj.(*models.SGuest)
 	if !guest.IsNetworkAllocated() {
-		self.SetStageFailed(ctx, fmt.Sprintf("Guest %s network not ready!!", guest.Name))
+		self.SetStageFailed(ctx, jsonutils.NewString(fmt.Sprintf("Guest %s network not ready!!", guest.Name)))
 	} else {
 		self.OnGuestNetworkReady(ctx, guest)
 	}
 }
 
 func (self *GuestDeployTask) OnGuestNetworkReady(ctx context.Context, guest *models.SGuest) {
+	self.SetStage("OnDeployWaitServerStop", nil)
 	if jsonutils.QueryBoolean(self.Params, "restart", false) {
-		self.SetStage("OnDeployWaitServerStop", nil)
 		guest.StartGuestStopTask(ctx, self.UserCred, false, self.GetTaskId())
 	} else {
-		self.OnDeployWaitServerStop(ctx, guest, nil)
+		// Note: have to use LocalTaskRun, run to another place implement OnDeployWaitServerStop
+		taskman.LocalTaskRun(self, func() (jsonutils.JSONObject, error) {
+			return nil, nil
+		})
 	}
 }
 
@@ -72,7 +75,7 @@ func (self *GuestDeployTask) DeployOnHost(ctx context.Context, guest *models.SGu
 
 func (self *GuestDeployTask) OnDeployGuestFail(ctx context.Context, guest *models.SGuest, err error) {
 	guest.SetStatus(self.UserCred, api.VM_DEPLOY_FAILED, err.Error())
-	self.SetStageFailed(ctx, err.Error())
+	self.SetStageFailed(ctx, jsonutils.Marshal(err))
 	logclient.AddActionLogWithStartable(self, guest, logclient.ACT_VM_DEPLOY, err, self.UserCred, false)
 	db.OpsLog.LogEvent(guest, db.ACT_VM_DEPLOY_FAIL, err.Error(), self.UserCred)
 }
@@ -134,7 +137,7 @@ func (self *GuestDeployTask) OnDeployGuestCompleteFailed(ctx context.Context, ob
 		}
 	}
 	guest.SetStatus(self.UserCred, api.VM_DEPLOY_FAILED, data.String())
-	self.SetStageFailed(ctx, data.String())
+	self.SetStageFailed(ctx, data)
 	logclient.AddActionLogWithStartable(self, guest, logclient.ACT_VM_DEPLOY, data, self.UserCred, false)
 	db.OpsLog.LogEvent(guest, db.ACT_VM_DEPLOY_FAIL, data, self.UserCred)
 }
@@ -144,7 +147,7 @@ func (self *GuestDeployTask) OnDeployStartGuestComplete(ctx context.Context, obj
 }
 
 func (self *GuestDeployTask) OnDeployStartGuestCompleteFailed(ctx context.Context, obj db.IStandaloneModel, data jsonutils.JSONObject) {
-	self.SetStageFailed(ctx, data.String())
+	self.SetStageFailed(ctx, data)
 }
 
 func (self *GuestDeployTask) OnDeployGuestSyncstatusComplete(ctx context.Context, obj db.IStandaloneModel, data jsonutils.JSONObject) {
@@ -152,7 +155,7 @@ func (self *GuestDeployTask) OnDeployGuestSyncstatusComplete(ctx context.Context
 }
 
 func (self *GuestDeployTask) OnDeployGuestSyncstatusCompleteFailed(ctx context.Context, obj db.IStandaloneModel, data jsonutils.JSONObject) {
-	self.SetStageFailed(ctx, data.String())
+	self.SetStageFailed(ctx, data)
 }
 
 func init() {

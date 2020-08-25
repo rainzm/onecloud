@@ -259,7 +259,7 @@ func (manager *SElasticcacheSkuManager) ListItemFilter(
 		}
 	}
 
-	if domainStr := query.ProjectDomain; len(domainStr) > 0 {
+	if domainStr := query.ProjectDomainId; len(domainStr) > 0 {
 		domain, err := db.TenantCacheManager.FetchDomainByIdOrName(context.Background(), domainStr)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
@@ -267,9 +267,9 @@ func (manager *SElasticcacheSkuManager) ListItemFilter(
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
-		query.ProjectDomain = domain.GetId()
+		query.ProjectDomainId = domain.GetId()
 	}
-	q = listItemDomainFilter(q, query.Providers, query.ProjectDomain)
+	q = listItemDomainFilter(q, query.Providers, query.ProjectDomainId)
 
 	// 按区间查询内存, 避免0.75G这样的套餐不好过滤
 	memSizeMB := query.MemorySizeMb
@@ -383,8 +383,7 @@ func (manager *SElasticcacheSkuManager) SyncElasticcacheSkus(ctx context.Context
 
 	syncResult := compare.SyncResult{}
 
-	extSkuMeta.SetRegionFilter(region)
-	extSkus, err := extSkuMeta.GetElasticCacheSkus()
+	extSkus, err := extSkuMeta.GetElasticCacheSkusByRegionExternalId(region.ExternalId)
 	if err != nil {
 		syncResult.Error(err)
 		return syncResult
@@ -448,13 +447,15 @@ func (self *SElasticcacheSku) syncWithCloudSku(ctx context.Context, userCred mcc
 	_, err := db.Update(self, func() error {
 		self.PrepaidStatus = extSku.PrepaidStatus
 		self.PostpaidStatus = extSku.PostpaidStatus
+		self.ZoneId = extSku.ZoneId
+		self.SlaveZoneId = extSku.SlaveZoneId
 		return nil
 	})
 	return err
 }
 
 func (manager *SElasticcacheSkuManager) newFromCloudSku(ctx context.Context, userCred mcclient.TokenCredential, extSku SElasticcacheSku) error {
-	return manager.TableSpec().Insert(&extSku)
+	return manager.TableSpec().Insert(ctx, &extSku)
 }
 
 func (manager *SElasticcacheSkuManager) AllowGetPropertyInstanceSpecs(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {

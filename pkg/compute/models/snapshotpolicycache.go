@@ -69,8 +69,12 @@ func init() {
 func NewSSnapshotPolicyCache(snapshotpolicyId, cloudregionId, externalId string) *SSnapshotPolicyCache {
 	cache := SSnapshotPolicyCache{
 		// SnapshotpolicyId:          snapshotpolicyId,
-		SCloudregionResourceBase:  SCloudregionResourceBase{cloudregionId},
-		SExternalizedResourceBase: db.SExternalizedResourceBase{externalId},
+		SCloudregionResourceBase: SCloudregionResourceBase{
+			CloudregionId: cloudregionId,
+		},
+		SExternalizedResourceBase: db.SExternalizedResourceBase{
+			ExternalId: externalId,
+		},
 	}
 	cache.SnapshotpolicyId = snapshotpolicyId
 	cache.SetModelManager(SnapshotPolicyCacheManager, &cache)
@@ -266,7 +270,7 @@ func (spcm *SSnapshotPolicyCacheManager) NewCache(ctx context.Context, userCred 
 	snapshotPolicyCache.Status = api.SNAPSHOT_POLICY_CACHE_STATUS_READY
 
 	// should have lock
-	if err := spcm.TableSpec().Insert(snapshotPolicyCache); err != nil {
+	if err := spcm.TableSpec().Insert(ctx, snapshotPolicyCache); err != nil {
 		return nil, errors.Wrapf(err, "insert snapshotpolicycache failed")
 	}
 	return snapshotPolicyCache, nil
@@ -281,7 +285,7 @@ func (spcm *SSnapshotPolicyCacheManager) NewCacheWithExternalId(ctx context.Cont
 	snapshotPolicyCache.Status = api.SNAPSHOT_POLICY_CACHE_STATUS_READY
 	snapshotPolicyCache.Name = name
 	// should have lock
-	if err := spcm.TableSpec().Insert(snapshotPolicyCache); err != nil {
+	if err := spcm.TableSpec().Insert(ctx, snapshotPolicyCache); err != nil {
 		return nil, errors.Wrapf(err, "insert snapshotpolicycache failed")
 	}
 	return snapshotPolicyCache, nil

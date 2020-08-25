@@ -93,29 +93,34 @@ type SLoadbalancerAgent struct {
 }
 
 type SLoadbalancerAgentParamsVrrp struct {
-	Priority          int
-	VirtualRouterId   int
-	GarpMasterRefresh int
+	Priority          int `json:",omitzero"`
+	VirtualRouterId   int `json:",omitzero"`
+	GarpMasterRefresh int `json:",omitzero"`
 	Preempt           bool
 	Interface         string
-	AdvertInt         int
+	AdvertInt         int `json:",omitzero"`
 	Pass              string
 }
 
+const (
+	lbagentVrrpDefaultVrid = 17
+	lbagentVrrpDefaultPrio = 100
+)
+
 type SLoadbalancerAgentParamsHaproxy struct {
 	GlobalLog      string
-	GlobalNbthread int
+	GlobalNbthread int `json:",omitzero"`
 	LogHttp        bool
 	LogTcp         bool
 	LogNormal      bool
-	TuneHttpMaxhdr int
+	TuneHttpMaxhdr int `json:",omitzero"`
 }
 
 type SLoadbalancerAgentParamsTelegraf struct {
 	InfluxDbOutputUrl       string
 	InfluxDbOutputName      string
 	InfluxDbOutputUnsafeSsl bool
-	HaproxyInputInterval    int
+	HaproxyInputInterval    int `json:",omitzero"`
 }
 
 type SLoadbalancerAgentParams struct {
@@ -142,6 +147,9 @@ func (p *SLoadbalancerAgentParamsVrrp) Validate(data *jsonutils.JSONDict) error 
 	if p.VirtualRouterId < 1 || p.VirtualRouterId > 255 {
 		return httperrors.NewInputParameterError("invalid vrrp virtual_router_id %d: want [1,255]", p.VirtualRouterId)
 	}
+	if p.AdvertInt < 1 || p.AdvertInt > 255 {
+		return httperrors.NewInputParameterError("invalid vrrp advert_int %d: want [1,255]", p.AdvertInt)
+	}
 	return nil
 }
 
@@ -149,19 +157,14 @@ func (p *SLoadbalancerAgentParamsVrrp) validatePeer(pp *SLoadbalancerAgentParams
 	if p.Priority == pp.Priority {
 		return fmt.Errorf("vrrp priority of peer lbagents must be different, got %d", p.Priority)
 	}
-	if p.VirtualRouterId != pp.VirtualRouterId {
-		return fmt.Errorf("vrrp virtual_router_id of peer lbagents must be the same: %d != %d", p.VirtualRouterId, pp.VirtualRouterId)
-	}
-	if p.AdvertInt != pp.AdvertInt {
-		return fmt.Errorf("vrrp advert_int of peer lbagents must be the same: %d != %d", p.AdvertInt, pp.AdvertInt)
-	}
-	if p.Preempt != pp.Preempt {
-		return fmt.Errorf("vrrp preempt property of peer lbagents must be the same: %v != %v", p.Preempt, pp.Preempt)
-	}
-	if p.Pass != pp.Pass {
-		return fmt.Errorf("vrrp password of peer lbagents must be the same: %q != %q", p.Pass, pp.Pass)
-	}
 	return nil
+}
+
+func (p *SLoadbalancerAgentParamsVrrp) setByPeer(pp *SLoadbalancerAgentParamsVrrp) {
+	p.VirtualRouterId = pp.VirtualRouterId
+	p.AdvertInt = pp.AdvertInt
+	p.Preempt = pp.Preempt
+	p.Pass = pp.Pass
 }
 
 func (p *SLoadbalancerAgentParamsVrrp) needsUpdatePeer(pp *SLoadbalancerAgentParamsVrrp) bool {
@@ -189,6 +192,12 @@ func (p *SLoadbalancerAgentParamsVrrp) updateBy(pp *SLoadbalancerAgentParamsVrrp
 }
 
 func (p *SLoadbalancerAgentParamsVrrp) initDefault(data *jsonutils.JSONDict) {
+	if !data.Contains("params", "vrrp", "interface") {
+		p.Interface = "eth0"
+	}
+	if !data.Contains("params", "vrrp", "virtual_router_id") {
+		p.VirtualRouterId = lbagentVrrpDefaultVrid
+	}
 	if !data.Contains("params", "vrrp", "advert_int") {
 		p.AdvertInt = 1
 	}
@@ -215,6 +224,14 @@ func (p *SLoadbalancerAgentParamsHaproxy) Validate(data *jsonutils.JSONDict) err
 		p.TuneHttpMaxhdr = 32767
 	}
 	return nil
+}
+
+func (p *SLoadbalancerAgentParamsHaproxy) needsUpdatePeer(pp *SLoadbalancerAgentParamsHaproxy) bool {
+	return *p != *pp
+}
+
+func (p *SLoadbalancerAgentParamsHaproxy) updateBy(pp *SLoadbalancerAgentParamsHaproxy) {
+	*p = *pp
 }
 
 func (p *SLoadbalancerAgentParamsHaproxy) initDefault(data *jsonutils.JSONDict) {
@@ -248,12 +265,21 @@ func (p *SLoadbalancerAgentParamsTelegraf) Validate(data *jsonutils.JSONDict) er
 	return nil
 }
 
+func (p *SLoadbalancerAgentParamsTelegraf) needsUpdatePeer(pp *SLoadbalancerAgentParamsTelegraf) bool {
+	return *p != *pp
+}
+
+func (p *SLoadbalancerAgentParamsTelegraf) updateBy(pp *SLoadbalancerAgentParamsTelegraf) {
+	*p = *pp
+}
+
 func (p *SLoadbalancerAgentParamsTelegraf) initDefault(data *jsonutils.JSONDict) {
 	if p.InfluxDbOutputUrl == "" {
 		baseOpts := &options.Options
 		u, _ := auth.GetServiceURL("influxdb", baseOpts.Region, "",
 			identity_apis.EndpointInterfacePublic)
 		p.InfluxDbOutputUrl = u
+		p.InfluxDbOutputUnsafeSsl = true
 	}
 	if p.HaproxyInputInterval == 0 {
 		p.HaproxyInputInterval = 5
@@ -314,6 +340,27 @@ func (p *SLoadbalancerAgentParams) Validate(data *jsonutils.JSONDict) error {
 	return nil
 }
 
+func (p *SLoadbalancerAgentParams) needsUpdatePeer(pp *SLoadbalancerAgentParams) bool {
+	if p.KeepalivedConfTmpl != pp.KeepalivedConfTmpl ||
+		p.HaproxyConfTmpl != pp.HaproxyConfTmpl ||
+		p.TelegrafConfTmpl != pp.TelegrafConfTmpl {
+		return true
+	}
+	return p.Vrrp.needsUpdatePeer(&pp.Vrrp) ||
+		p.Haproxy.needsUpdatePeer(&pp.Haproxy) ||
+		p.Telegraf.needsUpdatePeer(&pp.Telegraf)
+}
+
+func (p *SLoadbalancerAgentParams) updateBy(pp *SLoadbalancerAgentParams) {
+	p.KeepalivedConfTmpl = pp.KeepalivedConfTmpl
+	p.HaproxyConfTmpl = pp.HaproxyConfTmpl
+	p.TelegrafConfTmpl = pp.TelegrafConfTmpl
+
+	p.Vrrp.updateBy(&pp.Vrrp)
+	p.Haproxy.updateBy(&pp.Haproxy)
+	p.Telegraf.updateBy(&pp.Telegraf)
+}
+
 func (p *SLoadbalancerAgentParams) String() string {
 	return jsonutils.Marshal(p).String()
 }
@@ -325,13 +372,44 @@ func (p *SLoadbalancerAgentParams) IsZero() bool {
 	return false
 }
 
+func (man *SLoadbalancerAgentManager) AllowGetPropertyDefaultParams(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return db.IsAdminAllowGetSpec(userCred, man, "default-params")
+}
+
+func (man *SLoadbalancerAgentManager) GetPropertyDefaultParams(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	params := SLoadbalancerAgentParams{}
+	params.initDefault(jsonutils.NewDict())
+
+	{
+		clusterV := validators.NewModelIdOrNameValidator("cluster", "loadbalancercluster", userCred)
+		clusterV.Optional(true)
+		if err := clusterV.Validate(query.(*jsonutils.JSONDict)); err != nil {
+			return nil, err
+		}
+		if clusterV.Model != nil {
+			cluster := clusterV.Model.(*SLoadbalancerCluster)
+			lbagents, err := LoadbalancerClusterManager.getLoadbalancerAgents(cluster.Id)
+			if err != nil {
+				return nil, httperrors.NewGeneralError(err)
+			}
+			if len(lbagents) > 0 {
+				lbagent := lbagents[0]
+				params.updateBy(lbagent.Params)
+			}
+		}
+	}
+
+	paramsObj := jsonutils.Marshal(params)
+	r := jsonutils.NewDict()
+	r.Set("params", paramsObj)
+	return r, nil
+}
+
 func (man *SLoadbalancerAgentManager) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
 	clusterV := validators.NewModelIdOrNameValidator("cluster", "loadbalancercluster", ownerId)
-	paramsV := validators.NewStructValidator("params", &SLoadbalancerAgentParams{})
 	{
 		keyV := map[string]validators.IValidator{
 			"hb_timeout": validators.NewNonNegativeValidator("hb_timeout").Default(3600),
-			"params":     paramsV,
 			"cluster":    clusterV,
 		}
 		for _, v := range keyV {
@@ -346,8 +424,68 @@ func (man *SLoadbalancerAgentManager) ValidateCreateData(ctx context.Context, us
 		if err != nil {
 			return nil, httperrors.NewGeneralError(err)
 		}
-		params := paramsV.Value.(*SLoadbalancerAgentParams)
-		vrrpRouterId := params.Vrrp.VirtualRouterId
+		params := &SLoadbalancerAgentParams{}
+		{
+			if len(lbagents) > 0 {
+				peerLbagent := &lbagents[0]
+				peerParams := peerLbagent.Params
+				params.Vrrp.setByPeer(&peerParams.Vrrp)
+			}
+			if len(lbagents) == 0 && !data.Contains("params", "vrrp", "virtual_router_id") {
+				otherLbagents := []SLoadbalancerAgent{}
+				q := man.Query().GroupBy("cluster_id")
+				err := db.FetchModelObjects(LoadbalancerAgentManager, q, &otherLbagents)
+				if err != nil {
+					return nil, httperrors.NewInternalServerError("fetch lbagents of other clusters: %v", err)
+				}
+				maxVrid := -1
+				for i := range otherLbagents {
+					lbagent := &otherLbagents[i]
+					if lbagent.ClusterId == cluster.Id {
+						continue
+					}
+					vrid := lbagent.Params.Vrrp.VirtualRouterId
+					if vrid > maxVrid {
+						maxVrid = vrid
+					}
+				}
+				if maxVrid > 0 && maxVrid < 255 {
+					params.Vrrp.VirtualRouterId = maxVrid + 1
+				} else {
+					params.Vrrp.VirtualRouterId = lbagentVrrpDefaultVrid
+				}
+			}
+			if !data.Contains("params", "vrrp", "priority") {
+				// a backup to all existing members
+				minPrio := 256
+				for i := range lbagents {
+					peerLbagent := &lbagents[i]
+					priority := peerLbagent.Params.Vrrp.Priority
+					if priority < minPrio {
+						minPrio = priority
+					}
+				}
+				if minPrio > 1 {
+					params.Vrrp.Priority = minPrio - 1
+				} else {
+					params.Vrrp.Priority = lbagentVrrpDefaultPrio
+				}
+			}
+			var (
+				oldVrrpParams jsonutils.JSONObject
+				err           error
+			)
+			if oldVrrpParams, err = data.Get("params", "vrrp"); err != nil {
+				oldVrrpParams = jsonutils.NewDict()
+			}
+			vrrpParams := jsonutils.Marshal(params.Vrrp).(*jsonutils.JSONDict)
+			vrrpParams.UpdateDefault(oldVrrpParams)
+			data.Add(vrrpParams, "params", "vrrp")
+			paramsV := validators.NewStructValidator("params", params)
+			if err := paramsV.Validate(data); err != nil {
+				return nil, err
+			}
+		}
 		for i := range lbagents {
 			peerLbagent := &lbagents[i]
 			peerParams := peerLbagent.Params
@@ -356,6 +494,7 @@ func (man *SLoadbalancerAgentManager) ValidateCreateData(ctx context.Context, us
 				return nil, httperrors.NewConflictError("conflict with lbagent %s(%s): %v", peerLbagent.Name, peerLbagent.Id, err)
 			}
 		}
+		vrrpRouterId := params.Vrrp.VirtualRouterId
 		otherCluster, err := LoadbalancerClusterManager.findByVrrpRouterIdInZone(cluster.ZoneId, vrrpRouterId)
 		if err != nil {
 			return nil, err
@@ -544,6 +683,9 @@ func (man *SLoadbalancerAgentManager) CleanPendingDeleteLoadbalancers(ctx contex
 }
 
 func (lbagent *SLoadbalancerAgent) ValidateUpdateData(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data *jsonutils.JSONDict) (*jsonutils.JSONDict, error) {
+	if data.Contains("cluster_id") {
+		data.Remove("cluster_id")
+	}
 	{
 		keyV := map[string]validators.IValidator{
 			"hb_timeout": validators.NewNonNegativeValidator("hb_timeout").Optional(true),
@@ -684,11 +826,11 @@ func (lbagent *SLoadbalancerAgent) PerformHb(ctx context.Context, userCred mccli
 			}
 		}
 	}
-	diff, err := lbagent.GetModelManager().TableSpec().Update(lbagent, func() error {
+	diff, err := lbagent.GetModelManager().TableSpec().Update(ctx, lbagent, func() error {
 		lbagent.HbLastSeen = time.Now()
 		if jVer, err := data.Get("version"); err == nil {
 			if jVerStr, ok := jVer.(*jsonutils.JSONString); ok {
-				lbagent.Version = jVerStr.Value()
+				lbagent.Version, _ = jVerStr.GetString()
 			}
 		}
 		if ipV.IP != nil {
@@ -777,7 +919,7 @@ func (lbagent *SLoadbalancerAgent) PerformParamsPatch(ctx context.Context, userC
 		}
 		db.OpsLog.LogEvent(lbagent, db.ACT_UPDATE, diff, userCred)
 	}
-	if oldParams.Vrrp.needsUpdatePeer(&params.Vrrp) {
+	if oldParams.needsUpdatePeer(&params) {
 		lbagents, err := LoadbalancerClusterManager.getLoadbalancerAgents(lbagent.ClusterId)
 		if err != nil {
 			return nil, httperrors.NewGeneralError(err)
@@ -787,7 +929,7 @@ func (lbagent *SLoadbalancerAgent) PerformParamsPatch(ctx context.Context, userC
 			peerLbagent := &lbagents[i]
 			if lbagent.Id != peerLbagent.Id {
 				diff, err := db.Update(peerLbagent, func() error {
-					peerLbagent.Params.Vrrp.updateBy(&params.Vrrp)
+					peerLbagent.Params.updateBy(&params)
 					return nil
 				})
 				if err != nil {

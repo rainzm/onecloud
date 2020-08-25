@@ -130,25 +130,22 @@ func (manager *STenantCacheManager) fetchTenant(ctx context.Context, idStr strin
 		q = manager.GetTenantQuery()
 	}
 	q = filter(q)
-	tcnt, err := q.CountWithError()
+	caches := []STenant{}
+	err := FetchModelObjects(manager, q, &caches)
 	if err != nil {
-		return nil, errors.Wrap(err, "CountWithError")
+		return nil, errors.Wrap(err, "FetchModelObjects")
 	}
-	if tcnt > 1 {
-		return nil, errors.Wrapf(httperrors.ErrDuplicateName, "duplicate tenant/domain name (%d)", tcnt)
-	}
-	tobj, err := NewModelObject(manager)
-	if err != nil {
-		return nil, errors.Wrap(err, "NewModelObject")
-	}
-	err = q.First(tobj)
-	if err != nil && err != sql.ErrNoRows {
-		return nil, errors.Wrap(err, "query")
-	} else if tobj != nil {
-		tenant := tobj.(*STenant)
-		if noExpireCheck || !tenant.IsExpired() {
-			return tenant, nil
+	normal := []STenant{}
+	for _, cache := range caches {
+		if noExpireCheck || !cache.IsExpired() {
+			normal = append(normal, cache)
 		}
+	}
+	if len(normal) > 1 {
+		return nil, errors.Wrapf(httperrors.ErrDuplicateName, "duplicate tenant/domain name (%d)", len(normal))
+	}
+	if len(normal) == 1 {
+		return &normal[0], nil
 	}
 	if isDomain {
 		return manager.fetchDomainFromKeystone(ctx, idStr)
@@ -336,7 +333,7 @@ func (manager *STenantCacheManager) Save(ctx context.Context, idStr string, name
 		obj.Domain = domain
 		obj.DomainId = domainId
 		obj.LastCheck = now
-		err = manager.TableSpec().InsertOrUpdate(obj)
+		err = manager.TableSpec().InsertOrUpdate(ctx, obj)
 		if err != nil {
 			return nil, errors.Wrap(err, "InsertOrUpdate")
 		} else {
@@ -356,7 +353,7 @@ func (manager *STenantCacheManager) Save(ctx context.Context, idStr string, name
 	}, nil
 }*/
 
-func (tenant *STenant) GetDomain() string {
+/*func (tenant *STenant) GetDomain() string {
 	if len(tenant.Domain) == 0 {
 		return identityapi.DEFAULT_DOMAIN_NAME
 	}
@@ -368,7 +365,7 @@ func (tenant *STenant) GetDomainId() string {
 		return identityapi.DEFAULT_DOMAIN_ID
 	}
 	return tenant.DomainId
-}
+}*/
 
 func (manager *STenantCacheManager) findFirstProjectOfDomain(domainId string) (*STenant, error) {
 	q := manager.Query().Equals("domain_id", domainId)
@@ -420,4 +417,68 @@ func (manager *STenantCacheManager) FindFirstProjectOfDomain(ctx context.Context
 		return nil, errors.Wrap(err, "findFirstProjectOfDomain.queryFirst")
 	}
 	return tenant, nil
+}
+
+func (tenant *STenant) GetProjectId() string {
+	if tenant.IsDomain() {
+		return ""
+	} else {
+		return tenant.Id
+	}
+}
+
+func (tenant *STenant) GetTenantId() string {
+	return tenant.GetProjectId()
+}
+
+func (tenant *STenant) GetProjectDomainId() string {
+	if tenant.IsDomain() {
+		return tenant.Id
+	} else {
+		return tenant.DomainId
+	}
+}
+
+func (tenant *STenant) GetTenantName() string {
+	return tenant.GetProjectName()
+}
+
+func (tenant *STenant) GetProjectName() string {
+	if tenant.IsDomain() {
+		return ""
+	} else {
+		return tenant.Name
+	}
+}
+
+func (tenant *STenant) GetProjectDomain() string {
+	if tenant.IsDomain() {
+		return tenant.Name
+	} else {
+		return tenant.Domain
+	}
+}
+
+func (tenant *STenant) GetUserId() string {
+	return ""
+}
+
+func (tenant *STenant) GetUserName() string {
+	return ""
+}
+
+func (tenant *STenant) GetDomainId() string {
+	return ""
+}
+
+func (tenant *STenant) GetDomainName() string {
+	return ""
+}
+
+func (tenant *STenant) IsDomain() bool {
+	if tenant.DomainId == identityapi.KeystoneDomainRoot {
+		return true
+	} else {
+		return false
+	}
 }

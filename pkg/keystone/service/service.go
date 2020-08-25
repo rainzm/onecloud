@@ -28,12 +28,10 @@ import (
 	common_options "yunion.io/x/onecloud/pkg/cloudcommon/options"
 	"yunion.io/x/onecloud/pkg/cloudcommon/policy"
 	"yunion.io/x/onecloud/pkg/keystone/cronjobs"
-	_ "yunion.io/x/onecloud/pkg/keystone/driver/cas"
-	_ "yunion.io/x/onecloud/pkg/keystone/driver/ldap"
-	_ "yunion.io/x/onecloud/pkg/keystone/driver/sql"
 	"yunion.io/x/onecloud/pkg/keystone/models"
 	"yunion.io/x/onecloud/pkg/keystone/options"
 	_ "yunion.io/x/onecloud/pkg/keystone/policy"
+	"yunion.io/x/onecloud/pkg/keystone/saml"
 	_ "yunion.io/x/onecloud/pkg/keystone/tasks"
 	"yunion.io/x/onecloud/pkg/keystone/tokens"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
@@ -45,6 +43,7 @@ func StartService() {
 	db.DefaultUUIDGenerator = keystoneUUIDGenerator
 	db.DefaultProjectFetcher = keystoneProjectFetcher
 	db.DefaultDomainFetcher = keystoneDomainFetcher
+	db.DefaultUserFetcher = keystoneUserFetcher
 	db.DefaultDomainQuery = keystoneDomainQuery
 	db.DefaultProjectQuery = keystoneProjectQuery
 	db.DefaultProjectsFetcher = keystoneProjectsFetcher
@@ -68,8 +67,8 @@ func StartService() {
 	*/
 
 	app := app_common.InitApp(&opts.BaseOptions, true)
-	InitHandlers(app)
 
+	InitHandlers(app)
 	db.EnsureAppInitSyncDB(app, &opts.DBOptions, models.InitDB)
 
 	app_common.InitBaseAuth(&opts.BaseOptions)
@@ -80,11 +79,19 @@ func StartService() {
 		cron := cronman.InitCronJobManager(true, opts.CronJobWorkerCount)
 
 		cron.AddJobAtIntervalsWithStartRun("AutoSyncIdentityProviderTask", time.Duration(opts.AutoSyncIntervalSeconds)*time.Second, models.AutoSyncIdentityProviderTask, true)
-		cron.AddJobAtIntervalsWithStartRun("FetchProjectResourceCount", time.Duration(opts.FetchProjectResourceCountIntervalSeconds)*time.Second, cronjobs.FetchProjectResourceCount, false)
+		cron.AddJobAtIntervalsWithStartRun("FetchScopeResourceCount", time.Duration(opts.FetchScopeResourceCountIntervalSeconds)*time.Second, cronjobs.FetchScopeResourceCount, false)
 		cron.AddJobAtIntervalsWithStartRun("CalculateIdentityQuotaUsages", time.Duration(opts.CalculateQuotaUsageIntervalSeconds)*time.Second, models.IdentityQuotaManager.CalculateQuotaUsages, true)
 
 		cron.Start()
 		defer cron.Stop()
+	}
+
+	if options.Options.EnableSsl {
+		// enable SAML support only if ssl is enabled
+		err := saml.InitSAMLInstance()
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	go func() {

@@ -44,7 +44,14 @@ type SHostImageOptions struct {
 	CommonConfigFile  string   `help:"common config file for container"`
 }
 
-var HostImageOptions SHostImageOptions
+var (
+	HostImageOptions   SHostImageOptions
+	streamingWorkerMan *appsrv.SWorkerManager
+)
+
+func init() {
+	streamingWorkerMan = appsrv.NewWorkerManager("streaming_worker", 20, 1024, false)
+}
 
 func StartService() {
 	consts.SetServiceType("host-image")
@@ -68,8 +75,11 @@ func StartService() {
 }
 
 func initHandlers(app *appsrv.Application, prefix string) {
-	app.AddHandler("GET", fmt.Sprintf("%s/disks/<sid>", prefix), auth.Authenticate(getImage))
-	app.AddHandler("GET", fmt.Sprintf("%s/snapshots/<diskId>/<sid>", prefix), auth.Authenticate(getImage))
+	app.AddHandler("GET", fmt.Sprintf("%s/disks/<sid>", prefix), auth.Authenticate(getImage)).
+		SetProcessNoTimeout().SetWorkerManager(streamingWorkerMan)
+	app.AddHandler("GET", fmt.Sprintf("%s/snapshots/<diskId>/<sid>", prefix), auth.Authenticate(getImage)).
+		SetProcessNoTimeout().SetWorkerManager(streamingWorkerMan)
+
 	app.AddHandler("HEAD", fmt.Sprintf("%s/disks/<sid>", prefix), auth.Authenticate(getImageMeta))
 	app.AddHandler("HEAD", fmt.Sprintf("%s/snapshots/<diskId>/<sid>", prefix), auth.Authenticate(getImageMeta))
 	app.AddHandler("POST", fmt.Sprintf("%s/disks/<sid>", prefix), auth.Authenticate(closeImage))
@@ -140,7 +150,7 @@ func parseRange(reqRange string) (int64, int64, error) {
 func closeImage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	imagePath, err := inputCheck(ctx)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 
@@ -152,7 +162,8 @@ func closeImage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	}
 	err = f.Load(imagePath, true)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
+		return
 	}
 	f.Close()
 	w.WriteHeader(http.StatusOK)
@@ -161,7 +172,7 @@ func closeImage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 func getImage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	imagePath, err := inputCheck(ctx)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 
@@ -176,7 +187,7 @@ func getImage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	}
 	if err = f.Open(imagePath, true); err != nil {
 		log.Errorf("Open image error: %s", err)
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 	defer f.Close()
@@ -187,7 +198,7 @@ func getImage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 		startPos, endPos, err = parseRange(reqRange)
 		if err != nil {
 			log.Errorf("Parse range error: %s", err)
-			httperrors.GeneralServerError(w, err)
+			httperrors.GeneralServerError(ctx, w, err)
 			return
 		}
 	}
@@ -197,7 +208,7 @@ func getImage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 		rateLimit, err = strconv.ParseInt(strRateLimit, 10, 0)
 		if err != nil {
 			log.Errorf("Parse ratelimit error: %s", err)
-			httperrors.InvalidInputError(w, "Invaild rate limit header")
+			httperrors.InvalidInputError(ctx, w, "Invaild rate limit header")
 			return
 		}
 	}
@@ -228,9 +239,9 @@ func startStream(w http.ResponseWriter, f IImage, startPos, endPos, rateLimit in
 		if endPos-startPos < CHUNK_SIZE {
 			readSize = endPos - startPos + 1
 		}
-		buf, total := f.Read(startPos, readSize)
-		if total < 0 {
-			log.Errorf("Read image error: %d", total)
+		buf, err := f.Read(startPos, readSize)
+		if err != nil {
+			log.Errorf("Read image error: %s", err)
 			goto fail
 		}
 		startPos += readSize
@@ -259,7 +270,7 @@ fail:
 func getImageMeta(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	imagePath, err := inputCheck(ctx)
 	if err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 
@@ -270,7 +281,7 @@ func getImageMeta(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 		f = &SQcow2Image{}
 	}
 	if err = f.Open(imagePath, true); err != nil {
-		httperrors.GeneralServerError(w, err)
+		httperrors.GeneralServerError(ctx, w, err)
 		return
 	}
 

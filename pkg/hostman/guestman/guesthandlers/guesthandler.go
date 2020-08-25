@@ -58,6 +58,7 @@ func AddGuestTaskHandler(prefix string, app *appsrv.Application) {
 		for action, f := range map[string]actionFunc{
 			"create":               guestCreate,
 			"deploy":               guestDeploy,
+			"rebuild":              guestRebuild,
 			"start":                guestStart,
 			"stop":                 guestStop,
 			"monitor":              guestMonitor,
@@ -136,7 +137,11 @@ func guestCreate(ctx context.Context, sid string, body jsonutils.JSONObject) (in
 	}
 	hostutils.DelayTaskWithWorker(ctx,
 		guestman.GetGuestManager().GuestCreate,
-		&guestman.SGuestDeploy{sid, body, true},
+		&guestman.SGuestDeploy{
+			Sid:    sid,
+			Body:   body,
+			IsInit: true,
+		},
 		guestman.NbdWorker,
 	)
 	return nil, nil
@@ -149,7 +154,28 @@ func guestDeploy(ctx context.Context, sid string, body jsonutils.JSONObject) (in
 	}
 	hostutils.DelayTaskWithWorker(ctx,
 		guestman.GetGuestManager().GuestDeploy,
-		&guestman.SGuestDeploy{sid, body, false},
+		&guestman.SGuestDeploy{
+			Sid:    sid,
+			Body:   body,
+			IsInit: false,
+		},
+		guestman.NbdWorker,
+	)
+	return nil, nil
+}
+
+func guestRebuild(ctx context.Context, sid string, body jsonutils.JSONObject) (interface{}, error) {
+	err := guestman.GetGuestManager().PrepareDeploy(sid)
+	if err != nil {
+		return nil, err
+	}
+	hostutils.DelayTaskWithWorker(ctx,
+		guestman.GetGuestManager().GuestDeploy,
+		&guestman.SGuestDeploy{
+			Sid:    sid,
+			Body:   body,
+			IsInit: true,
+		},
 		guestman.NbdWorker,
 	)
 	return nil, nil
@@ -196,7 +222,10 @@ func guestSync(ctx context.Context, sid string, body jsonutils.JSONObject) (inte
 	if !guestman.GetGuestManager().IsGuestExist(sid) {
 		return nil, httperrors.NewNotFoundError("Guest %s not found", sid)
 	}
-	hostutils.DelayTask(ctx, guestman.GetGuestManager().GuestSync, &guestman.SBaseParms{sid, body})
+	hostutils.DelayTask(ctx, guestman.GetGuestManager().GuestSync, &guestman.SBaseParms{
+		Sid:  sid,
+		Body: body,
+	})
 	return nil, nil
 }
 
@@ -224,7 +253,11 @@ func guestIoThrottle(ctx context.Context, sid string, body jsonutils.JSONObject)
 	if err != nil {
 		return nil, httperrors.NewMissingParameterError("iops")
 	}
-	hostutils.DelayTaskWithoutReqctx(ctx, guestman.GetGuestManager().GuestIoThrottle, &guestman.SGuestIoThrottle{sid, bps, iops})
+	hostutils.DelayTaskWithoutReqctx(ctx, guestman.GetGuestManager().GuestIoThrottle, &guestman.SGuestIoThrottle{
+		Sid:  sid,
+		BPS:  bps,
+		IOPS: iops,
+	})
 	return nil, nil
 }
 
@@ -234,7 +267,10 @@ func guestSrcPrepareMigrate(ctx context.Context, sid string, body jsonutils.JSON
 	}
 	liveMigrate := jsonutils.QueryBoolean(body, "live_migrate", false)
 	hostutils.DelayTask(ctx, guestman.GetGuestManager().SrcPrepareMigrate,
-		&guestman.SSrcPrepareMigrate{sid, liveMigrate})
+		&guestman.SSrcPrepareMigrate{
+			Sid:         sid,
+			LiveMigrate: liveMigrate,
+		})
 	return nil, nil
 }
 
@@ -295,11 +331,17 @@ func guestDestPrepareMigrate(ctx context.Context, sid string, body jsonutils.JSO
 		if err != nil {
 			return nil, httperrors.NewInputParameterError("Get desc disks error")
 		} else {
-			targetStorageId, _ := disks[0].GetString("target_storage_id")
-			if len(targetStorageId) == 0 {
-				return nil, httperrors.NewMissingParameterError("target_storage_id")
+			targetStorageIds := []string{}
+			for i := 0; i < len(disks); i++ {
+				targetStorageId, _ := disks[i].GetString("target_storage_id")
+				if len(targetStorageId) == 0 {
+					return nil, httperrors.NewMissingParameterError("target_storage_id")
+				}
+				targetStorageIds = append(targetStorageIds, targetStorageId)
+				// params.TargetStorageId = targetStorageId
+				params.TargetStorageIds = targetStorageIds
 			}
-			params.TargetStorageId = targetStorageId
+
 		}
 		params.RebaseDisks = jsonutils.QueryBoolean(body, "rebase_disks", false)
 	}
@@ -359,7 +401,11 @@ func guestDriveMirror(ctx context.Context, sid string, body jsonutils.JSONObject
 		return nil, httperrors.NewMissingParameterError("desc")
 	}
 	hostutils.DelayTaskWithoutReqctx(ctx, guestman.GetGuestManager().StartDriveMirror,
-		&guestman.SDriverMirror{sid, backupNbdServerUri, desc})
+		&guestman.SDriverMirror{
+			Sid:          sid,
+			NbdServerUri: backupNbdServerUri,
+			Desc:         desc,
+		})
 	return nil, nil
 }
 
@@ -383,7 +429,11 @@ func guestHotplugCpuMem(ctx context.Context, sid string, body jsonutils.JSONObje
 	addCpuCount, _ := body.Int("add_cpu")
 	addMemSize, _ := body.Int("add_mem")
 	hostutils.DelayTaskWithoutReqctx(ctx, guestman.GetGuestManager().HotplugCpuMem,
-		&guestman.SGuestHotplugCpuMem{sid, addCpuCount, addMemSize})
+		&guestman.SGuestHotplugCpuMem{
+			Sid:         sid,
+			AddCpuCount: addCpuCount,
+			AddMemSize:  addMemSize,
+		})
 	return nil, nil
 }
 
@@ -411,7 +461,10 @@ func guestReloadDiskSnapshot(ctx context.Context, sid string, body jsonutils.JSO
 		return nil, httperrors.NewNotFoundError("Disk not found")
 	}
 
-	hostutils.DelayTask(ctx, guestman.GetGuestManager().ReloadDiskSnapshot, &guestman.SReloadDisk{sid, disk})
+	hostutils.DelayTask(ctx, guestman.GetGuestManager().ReloadDiskSnapshot, &guestman.SReloadDisk{
+		Sid:  sid,
+		Disk: disk,
+	})
 	return nil, nil
 }
 
@@ -443,7 +496,11 @@ func guestSnapshot(ctx context.Context, sid string, body jsonutils.JSONObject) (
 		return nil, httperrors.NewNotFoundError("Disk not found")
 	}
 
-	hostutils.DelayTask(ctx, guestman.GetGuestManager().DoSnapshot, &guestman.SDiskSnapshot{sid, snapshotId, disk})
+	hostutils.DelayTask(ctx, guestman.GetGuestManager().DoSnapshot, &guestman.SDiskSnapshot{
+		Sid:        sid,
+		SnapshotId: snapshotId,
+		Disk:       disk,
+	})
 	return nil, nil
 }
 

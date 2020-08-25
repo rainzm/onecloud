@@ -15,30 +15,14 @@
 package models
 
 import (
-	"strings"
 	"time"
 
 	"yunion.io/x/onecloud/pkg/vpcagent/apihelper"
 )
 
-// pluralMap maps from KeyPlurals to underscore-separated field names
-var pluralMap = map[string]string{}
-
-func init() {
-	// XXX drop this
-	ss := []string{
-		"vpcs",
-		"networks",
-		"guestnetworks",
-	}
-	for _, s := range ss {
-		k := strings.Replace(s, "_", "", -1)
-		pluralMap[k] = s
-	}
-}
-
 type ModelSetsMaxUpdatedAt struct {
 	Vpcs               time.Time
+	Wires              time.Time
 	Networks           time.Time
 	Guests             time.Time
 	Hosts              time.Time
@@ -46,11 +30,15 @@ type ModelSetsMaxUpdatedAt struct {
 	SecurityGroupRules time.Time
 	Guestnetworks      time.Time
 	Guestsecgroups     time.Time
+	Elasticips         time.Time
+
+	DnsRecords time.Time
 }
 
 func NewModelSetsMaxUpdatedAt() *ModelSetsMaxUpdatedAt {
 	return &ModelSetsMaxUpdatedAt{
 		Vpcs:               apihelper.PseudoZeroTime,
+		Wires:              apihelper.PseudoZeroTime,
 		Networks:           apihelper.PseudoZeroTime,
 		Guests:             apihelper.PseudoZeroTime,
 		Hosts:              apihelper.PseudoZeroTime,
@@ -58,11 +46,15 @@ func NewModelSetsMaxUpdatedAt() *ModelSetsMaxUpdatedAt {
 		SecurityGroupRules: apihelper.PseudoZeroTime,
 		Guestnetworks:      apihelper.PseudoZeroTime,
 		Guestsecgroups:     apihelper.PseudoZeroTime,
+		Elasticips:         apihelper.PseudoZeroTime,
+
+		DnsRecords: apihelper.PseudoZeroTime,
 	}
 }
 
 type ModelSets struct {
 	Vpcs               Vpcs
+	Wires              Wires
 	Networks           Networks
 	Guests             Guests
 	Hosts              Hosts
@@ -70,11 +62,15 @@ type ModelSets struct {
 	SecurityGroupRules SecurityGroupRules
 	Guestnetworks      Guestnetworks
 	Guestsecgroups     Guestsecgroups
+	Elasticips         Elasticips
+
+	DnsRecords DnsRecords
 }
 
 func NewModelSets() *ModelSets {
 	return &ModelSets{
 		Vpcs:               Vpcs{},
+		Wires:              Wires{},
 		Networks:           Networks{},
 		Guests:             Guests{},
 		Hosts:              Hosts{},
@@ -82,6 +78,9 @@ func NewModelSets() *ModelSets {
 		SecurityGroupRules: SecurityGroupRules{},
 		Guestnetworks:      Guestnetworks{},
 		Guestsecgroups:     Guestsecgroups{},
+		Elasticips:         Elasticips{},
+
+		DnsRecords: DnsRecords{},
 	}
 }
 
@@ -89,6 +88,7 @@ func (mss *ModelSets) ModelSetList() []apihelper.IModelSet {
 	// it's ordered this way to favour creation, not deletion
 	return []apihelper.IModelSet{
 		mss.Vpcs,
+		mss.Wires,
 		mss.Networks,
 		mss.Guests,
 		mss.Hosts,
@@ -96,6 +96,9 @@ func (mss *ModelSets) ModelSetList() []apihelper.IModelSet {
 		mss.SecurityGroupRules,
 		mss.Guestnetworks,
 		mss.Guestsecgroups,
+		mss.Elasticips,
+
+		mss.DnsRecords,
 	}
 }
 
@@ -103,9 +106,10 @@ func (mss *ModelSets) NewEmpty() apihelper.IModelSets {
 	return NewModelSets()
 }
 
-func (mss *ModelSets) Copy() apihelper.IModelSets {
+func (mss *ModelSets) copy_() *ModelSets {
 	mssCopy := &ModelSets{
 		Vpcs:               mss.Vpcs.Copy().(Vpcs),
+		Wires:              mss.Wires.Copy().(Wires),
 		Networks:           mss.Networks.Copy().(Networks),
 		Guests:             mss.Guests.Copy().(Guests),
 		Hosts:              mss.Hosts.Copy().(Hosts),
@@ -113,7 +117,19 @@ func (mss *ModelSets) Copy() apihelper.IModelSets {
 		SecurityGroupRules: mss.SecurityGroupRules.Copy().(SecurityGroupRules),
 		Guestnetworks:      mss.Guestnetworks.Copy().(Guestnetworks),
 		Guestsecgroups:     mss.Guestsecgroups.Copy().(Guestsecgroups),
+		Elasticips:         mss.Elasticips.Copy().(Elasticips),
+
+		DnsRecords: mss.DnsRecords.Copy().(DnsRecords),
 	}
+	return mssCopy
+}
+
+func (mss *ModelSets) Copy() apihelper.IModelSets {
+	return mss.copy_()
+}
+
+func (mss *ModelSets) CopyJoined() apihelper.IModelSets {
+	mssCopy := mss.copy_()
 	mssCopy.join()
 	return mssCopy
 }
@@ -141,13 +157,17 @@ func (mss *ModelSets) ApplyUpdates(mssNews apihelper.IModelSets) apihelper.Model
 func (mss *ModelSets) join() bool {
 	mss.Guests.initJoin()
 	var p []bool
+	p = append(p, mss.Vpcs.joinWires(mss.Wires))
+	p = append(p, mss.Wires.joinNetworks(mss.Networks))
 	p = append(p, mss.Vpcs.joinNetworks(mss.Networks))
 	p = append(p, mss.Networks.joinGuestnetworks(mss.Guestnetworks))
+	p = append(p, mss.Networks.joinElasticips(mss.Elasticips))
 	p = append(p, mss.Guests.joinHosts(mss.Hosts))
 	p = append(p, mss.Guests.joinSecurityGroups(mss.SecurityGroups))
 	p = append(p, mss.SecurityGroups.joinSecurityGroupRules(mss.SecurityGroupRules))
 	p = append(p, mss.Guestsecgroups.join(mss.SecurityGroups, mss.Guests))
 	p = append(p, mss.Guestnetworks.joinGuests(mss.Guests))
+	p = append(p, mss.Guestnetworks.joinElasticips(mss.Elasticips))
 	for _, b := range p {
 		if !b {
 			return false

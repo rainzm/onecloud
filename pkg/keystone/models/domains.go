@@ -79,7 +79,7 @@ func (manager *SDomainManager) InitializeData() error {
 		root.DomainId = api.KeystoneDomainRoot
 		root.Enabled = tristate.False
 		root.Description = "The hidden root domain"
-		err := manager.TableSpec().Insert(root)
+		err := manager.TableSpec().Insert(context.TODO(), root)
 		if err != nil {
 			log.Errorf("fail to insert root domain ... %s", err)
 			return err
@@ -97,7 +97,7 @@ func (manager *SDomainManager) InitializeData() error {
 		defDomain.DomainId = api.KeystoneDomainRoot
 		defDomain.Enabled = tristate.True
 		defDomain.Description = "The default domain"
-		err := manager.TableSpec().Insert(defDomain)
+		err := manager.TableSpec().Insert(context.TODO(), defDomain)
 		if err != nil {
 			log.Errorf("fail to insert default domain ... %s", err)
 			return err
@@ -192,6 +192,19 @@ func (manager *SDomainManager) ListItemFilter(
 		}
 	}
 
+	if len(query.IdpId) > 0 {
+		idpObj, err := IdentityProviderManager.FetchByIdOrName(userCred, query.IdpId)
+		if err != nil {
+			if errors.Cause(err) == sql.ErrNoRows {
+				return nil, errors.Wrapf(httperrors.ErrResourceNotFound, "%s %s", IdentityProviderManager.Keyword(), query.IdpId)
+			} else {
+				return nil, errors.Wrap(err, "IdentityProviderManager.FetchByIdOrName")
+			}
+		}
+		subq := IdmappingManager.FetchPublicIdsExcludesQuery(idpObj.GetId(), api.IdMappingEntityDomain, nil)
+		q = q.In("id", subq.SubQuery())
+	}
+
 	return q, nil
 }
 
@@ -261,6 +274,14 @@ func (domain *SDomain) ValidatePurgeCondition(ctx context.Context) error {
 	}
 	if domain.Enabled.IsTrue() {
 		return httperrors.NewInvalidStatusError("domain is enabled")
+	}
+	usrCnt, _ := domain.GetUserCount()
+	if usrCnt > 0 {
+		return httperrors.NewInvalidStatusError("domain is in use by user")
+	}
+	groupCnt, _ := domain.GetGroupCount()
+	if groupCnt > 0 {
+		return httperrors.NewInvalidStatusError("group is in use by group")
 	}
 	projCnt, _ := domain.GetProjectCount()
 	if projCnt > 0 {
@@ -359,7 +380,7 @@ func (manager *SDomainManager) FetchCustomizeColumns(
 			if update.IsZero() {
 				update = time.Now()
 			}
-			nextUpdate := update.Add(time.Duration(options.Options.FetchProjectResourceCountIntervalSeconds) * time.Second)
+			nextUpdate := update.Add(time.Duration(options.Options.FetchScopeResourceCountIntervalSeconds) * time.Second)
 			rows[i].ExtResourcesNextUpdate = nextUpdate
 		}
 	}
@@ -434,7 +455,7 @@ func (domain *SDomain) Delete(ctx context.Context, userCred mcclient.TokenCreden
 }
 
 func (domain *SDomain) getIdmapping() (*SIdmapping, error) {
-	return IdmappingManager.FetchEntity(domain.Id, api.IdMappingEntityDomain)
+	return IdmappingManager.FetchFirstEntity(domain.Id, api.IdMappingEntityDomain)
 }
 
 func (domain *SDomain) IsReadOnly() bool {
@@ -485,7 +506,7 @@ func (domain *SDomain) UnlinkIdp(idpId string) error {
 }
 
 func (domain *SDomain) getExternalResources() (map[string]int, time.Time, error) {
-	return ProjectResourceManager.getProjectResource(domain.Id)
+	return ScopeResourceManager.getScopeResource(domain.Id, "", "")
 }
 
 func (manager *SDomainManager) ValidateCreateData(

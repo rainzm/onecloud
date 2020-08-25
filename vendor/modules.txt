@@ -1,3 +1,7 @@
+# bazil.org/fuse v0.0.0-20180421153158-65cc252bf669
+bazil.org/fuse
+bazil.org/fuse/fs
+bazil.org/fuse/fuseutil
 # cloud.google.com/go v0.50.0
 cloud.google.com/go
 cloud.google.com/go/compute/metadata
@@ -56,7 +60,7 @@ github.com/RoaringBitmap/roaring
 github.com/Shopify/sarama
 # github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6
 github.com/StackExchange/wmi
-# github.com/aliyun/alibaba-cloud-sdk-go v0.0.0-20180112035716-b5829a0278c8
+# github.com/aliyun/alibaba-cloud-sdk-go v0.0.0-20181031125837-1b0ec6f46eb1
 github.com/aliyun/alibaba-cloud-sdk-go/sdk
 github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth
 github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials
@@ -158,6 +162,8 @@ github.com/aws/aws-sdk-go/service/iam
 github.com/aws/aws-sdk-go/service/s3
 github.com/aws/aws-sdk-go/service/sts
 github.com/aws/aws-sdk-go/service/sts/stsiface
+# github.com/beevik/etree v1.1.0
+github.com/beevik/etree
 # github.com/benbjohnson/clock v1.0.0
 github.com/benbjohnson/clock
 # github.com/beorn7/perks v1.0.0
@@ -366,11 +372,6 @@ github.com/hako/durafmt
 github.com/huandu/xstrings
 # github.com/imdario/mergo v0.3.6
 github.com/imdario/mergo
-# github.com/jinzhu/gorm v1.9.1
-github.com/jinzhu/gorm
-github.com/jinzhu/gorm/dialects/sqlite
-# github.com/jinzhu/inflection v1.0.0
-github.com/jinzhu/inflection
 # github.com/jmespath/go-jmespath v0.0.0-20180206201540-c2b33e8439af
 github.com/jmespath/go-jmespath
 # github.com/json-iterator/go v1.1.7
@@ -381,6 +382,8 @@ github.com/jstemmer/go-junit-report/formatter
 github.com/jstemmer/go-junit-report/parser
 # github.com/jtolds/gls v4.20.0+incompatible
 github.com/jtolds/gls
+# github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0
+github.com/kardianos/osext
 # github.com/koding/websocketproxy v0.0.0-20181220232114-7ed82d81a28c
 github.com/koding/websocketproxy
 # github.com/konsorten/go-windows-terminal-sequences v1.0.1
@@ -391,8 +394,43 @@ github.com/kr/logfmt
 github.com/kr/pty
 # github.com/leodido/go-urn v1.1.0
 github.com/leodido/go-urn
+# github.com/lestrrat-go/iter v0.0.0-20200422075355-fc1769541911
+github.com/lestrrat-go/iter/arrayiter
+github.com/lestrrat-go/iter/mapiter
+# github.com/lestrrat-go/jwx v1.0.2
+github.com/lestrrat-go/jwx/buffer
+github.com/lestrrat-go/jwx/internal/base64
+github.com/lestrrat-go/jwx/internal/concatkdf
+github.com/lestrrat-go/jwx/internal/iter
+github.com/lestrrat-go/jwx/internal/option
+github.com/lestrrat-go/jwx/internal/padbuf
+github.com/lestrrat-go/jwx/internal/pool
+github.com/lestrrat-go/jwx/jwa
+github.com/lestrrat-go/jwx/jwe
+github.com/lestrrat-go/jwx/jwe/internal/aescbc
+github.com/lestrrat-go/jwx/jwe/internal/cipher
+github.com/lestrrat-go/jwx/jwe/internal/content_crypt
+github.com/lestrrat-go/jwx/jwe/internal/keyenc
+github.com/lestrrat-go/jwx/jwe/internal/keygen
+github.com/lestrrat-go/jwx/jwk
+github.com/lestrrat-go/jwx/jws
+github.com/lestrrat-go/jwx/jws/sign
+github.com/lestrrat-go/jwx/jws/verify
+github.com/lestrrat-go/jwx/jwt
+github.com/lestrrat-go/jwx/jwt/internal/types
+github.com/lestrrat-go/jwx/jwt/openid
+# github.com/lestrrat-go/pdebug v0.0.0-20200204225717-4d6bd78da58d
+github.com/lestrrat-go/pdebug
+# github.com/lestrrat/go-jwx v0.0.0-20180221005942-b7d4802280ae
+github.com/lestrrat/go-jwx/internal/base64
+github.com/lestrrat/go-jwx/jwa
+github.com/lestrrat/go-jwx/jwk
+# github.com/lestrrat/go-pdebug v0.0.0-20180220043741-569c97477ae8
+github.com/lestrrat/go-pdebug
 # github.com/libvirt/libvirt-go-xml v5.2.0+incompatible
 github.com/libvirt/libvirt-go-xml
+# github.com/ma314smith/signedxml v0.0.0-20200410192636-c342a2d0ae60
+github.com/ma314smith/signedxml
 # github.com/mattn/go-colorable v0.1.2
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.9
@@ -495,6 +533,8 @@ github.com/ryszard/goskiplist/skiplist
 github.com/satori/go.uuid
 # github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908
 github.com/serialx/hashring
+# github.com/sevlyar/go-daemon v0.1.5
+github.com/sevlyar/go-daemon
 # github.com/shirou/gopsutil v2.18.10+incompatible
 github.com/shirou/gopsutil/cpu
 github.com/shirou/gopsutil/host
@@ -524,7 +564,7 @@ github.com/spaolacci/murmur3
 github.com/spf13/pflag
 # github.com/stretchr/objx v0.2.0
 github.com/stretchr/objx
-# github.com/stretchr/testify v1.4.0
+# github.com/stretchr/testify v1.5.1
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/mock
 github.com/stretchr/testify/require
@@ -646,7 +686,10 @@ golang.org/x/exp/cmd/apidiff
 # golang.org/x/lint v0.0.0-20191125180803-fdd1cda4f05f
 golang.org/x/lint
 golang.org/x/lint/golint
-# golang.org/x/net v0.0.0-20191209160850-c0dbc17a3553
+# golang.org/x/mod v0.2.0
+golang.org/x/mod/module
+golang.org/x/mod/semver
+# golang.org/x/net v0.0.0-20200226121028-0de0cce0169b
 golang.org/x/net/bpf
 golang.org/x/net/context
 golang.org/x/net/context/ctxhttp
@@ -676,14 +719,26 @@ golang.org/x/sync/errgroup
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
 golang.org/x/sys/windows
-# golang.org/x/text v0.3.2
+# golang.org/x/text v0.3.3
+golang.org/x/text/feature/plural
+golang.org/x/text/internal
+golang.org/x/text/internal/catmsg
+golang.org/x/text/internal/format
+golang.org/x/text/internal/language
+golang.org/x/text/internal/language/compact
+golang.org/x/text/internal/number
+golang.org/x/text/internal/stringset
+golang.org/x/text/internal/tag
+golang.org/x/text/language
+golang.org/x/text/message
+golang.org/x/text/message/catalog
 golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 # golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
 golang.org/x/time/rate
-# golang.org/x/tools v0.0.0-20191227053925-7b8e75db28f4
+# golang.org/x/tools v0.0.0-20200515220128-d3bf790afa53
 golang.org/x/tools/cmd/goimports
 golang.org/x/tools/go/analysis
 golang.org/x/tools/go/analysis/passes/inspect
@@ -691,16 +746,23 @@ golang.org/x/tools/go/ast/astutil
 golang.org/x/tools/go/ast/inspector
 golang.org/x/tools/go/buildutil
 golang.org/x/tools/go/gcexportdata
+golang.org/x/tools/go/internal/cgo
 golang.org/x/tools/go/internal/gcimporter
 golang.org/x/tools/go/internal/packagesdriver
+golang.org/x/tools/go/loader
 golang.org/x/tools/go/packages
 golang.org/x/tools/go/types/objectpath
 golang.org/x/tools/go/types/typeutil
+golang.org/x/tools/internal/analysisinternal
+golang.org/x/tools/internal/event
+golang.org/x/tools/internal/event/core
+golang.org/x/tools/internal/event/keys
+golang.org/x/tools/internal/event/label
 golang.org/x/tools/internal/fastwalk
+golang.org/x/tools/internal/gocommand
 golang.org/x/tools/internal/gopathwalk
 golang.org/x/tools/internal/imports
-golang.org/x/tools/internal/module
-golang.org/x/tools/internal/semver
+golang.org/x/tools/internal/packagesinternal
 # golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543
 golang.org/x/xerrors
 golang.org/x/xerrors/internal
@@ -787,6 +849,8 @@ google.golang.org/grpc/status
 google.golang.org/grpc/tap
 # gopkg.in/asn1-ber.v1 v1.0.0-20181015200546-f715ec2f112d
 gopkg.in/asn1-ber.v1
+# gopkg.in/fatih/set.v0 v0.2.1
+gopkg.in/fatih/set.v0
 # gopkg.in/go-playground/validator.v9 v9.29.1
 gopkg.in/go-playground/validator.v9
 # gopkg.in/inf.v0 v0.9.1
@@ -797,29 +861,33 @@ gopkg.in/ini.v1
 gopkg.in/ldap.v3
 # gopkg.in/yaml.v2 v2.2.8
 gopkg.in/yaml.v2
-# honnef.co/go/tools v0.0.1-2019.2.3
+# honnef.co/go/tools v0.0.1-2020.1.4
 honnef.co/go/tools/arg
 honnef.co/go/tools/cmd/staticcheck
+honnef.co/go/tools/code
 honnef.co/go/tools/config
 honnef.co/go/tools/deprecated
+honnef.co/go/tools/edit
 honnef.co/go/tools/facts
 honnef.co/go/tools/functions
 honnef.co/go/tools/go/types/typeutil
 honnef.co/go/tools/internal/cache
-honnef.co/go/tools/internal/passes/buildssa
+honnef.co/go/tools/internal/passes/buildir
 honnef.co/go/tools/internal/renameio
+honnef.co/go/tools/internal/robustio
 honnef.co/go/tools/internal/sharedcheck
+honnef.co/go/tools/ir
+honnef.co/go/tools/ir/irutil
 honnef.co/go/tools/lint
 honnef.co/go/tools/lint/lintdsl
 honnef.co/go/tools/lint/lintutil
 honnef.co/go/tools/lint/lintutil/format
 honnef.co/go/tools/loader
+honnef.co/go/tools/pattern
 honnef.co/go/tools/printf
+honnef.co/go/tools/report
 honnef.co/go/tools/simple
-honnef.co/go/tools/ssa
-honnef.co/go/tools/ssautil
 honnef.co/go/tools/staticcheck
-honnef.co/go/tools/staticcheck/vrp
 honnef.co/go/tools/stylecheck
 honnef.co/go/tools/unused
 honnef.co/go/tools/version
@@ -991,19 +1059,24 @@ sigs.k8s.io/yaml
 yunion.io/x/executor/apis
 yunion.io/x/executor/client
 yunion.io/x/executor/server
-# yunion.io/x/jsonutils v0.0.0-20200415132054-2bf8a5e94501
+# yunion.io/x/jsonutils v0.0.0-20200814075449-927b118adbd8
 yunion.io/x/jsonutils
 # yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
 yunion.io/x/log
 yunion.io/x/log/hooks
-# yunion.io/x/ovsdb v0.0.0-20200512112253-a3601d1ee987
+# yunion.io/x/ovsdb v0.0.0-20200526071744-27bf0940cbc7
 yunion.io/x/ovsdb/cli_util
 yunion.io/x/ovsdb/schema/ovn_nb
 yunion.io/x/ovsdb/types
+<<<<<<< HEAD
 # yunion.io/x/pkg v0.0.0-20200516092703-0a53bc9270aa
+=======
+# yunion.io/x/pkg v0.0.0-20200814072949-4f1b541857d6
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 yunion.io/x/pkg/errors
 yunion.io/x/pkg/gotypes
 yunion.io/x/pkg/prettytable
+yunion.io/x/pkg/sortedmap
 yunion.io/x/pkg/trace
 yunion.io/x/pkg/tristate
 yunion.io/x/pkg/util/cache
@@ -1032,7 +1105,7 @@ yunion.io/x/pkg/util/workqueue
 yunion.io/x/pkg/utils
 # yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
 yunion.io/x/s3cli
-# yunion.io/x/sqlchemy v0.0.0-20200312002602-1177cd8fbc57
+# yunion.io/x/sqlchemy v0.0.0-20200820050957-1542f05b9fcd
 yunion.io/x/sqlchemy
-# yunion.io/x/structarg v0.0.0-20200423163001-168d0687be7e
+# yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce
 yunion.io/x/structarg

@@ -107,14 +107,6 @@ func (self *SGuestdisk) ValidateUpdateData(ctx context.Context, userCred mcclien
 	return input, nil
 }
 
-func (joint *SGuestdisk) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SGuestdisk) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
-}
-
 func (self *SGuestdisk) GetExtraDetails(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -167,7 +159,7 @@ func (manager *SGuestdiskManager) FetchCustomizeColumns(
 	return rows
 }
 
-func (self *SGuestdisk) DoSave(driver string, cache string, mountpoint string) error {
+func (self *SGuestdisk) DoSave(ctx context.Context, driver string, cache string, mountpoint string) error {
 	self.ImagePath = ""
 	if len(driver) == 0 {
 		driver = "scsi"
@@ -181,7 +173,7 @@ func (self *SGuestdisk) DoSave(driver string, cache string, mountpoint string) e
 	self.Driver = driver
 	self.CacheMode = cache
 	self.AioMode = "native"
-	return GuestdiskManager.TableSpec().Insert(self)
+	return GuestdiskManager.TableSpec().Insert(ctx, self)
 }
 
 func (self *SGuestdisk) GetDisk() *SDisk {
@@ -212,15 +204,11 @@ func (self *SGuestdisk) GetJsonDescAtHost(host *SHost) jsonutils.JSONObject {
 			desc.Add(jsonutils.NewString(storagecacheimg.Path), "image_path")
 		}
 	}
-	storage := disk.GetStorage()
-	// XXX ???
 	if host.HostType == api.HOST_TYPE_HYPERVISOR {
 		desc.Add(jsonutils.NewString(disk.StorageId), "storage_id")
 		localpath := disk.GetPathAtHost(host)
 		if len(localpath) == 0 {
 			desc.Add(jsonutils.JSONTrue, "migrating")
-			target := host.GetLeastUsedStorage(storage.StorageType)
-			desc.Add(jsonutils.NewString(target.Id), "target_storage_id")
 			disk.SetStatus(nil, api.DISK_START_MIGRATE, "migration")
 		} else {
 			desc.Add(jsonutils.NewString(localpath), "path")

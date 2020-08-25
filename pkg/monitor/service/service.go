@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"os"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"golang.org/x/sync/errgroup"
@@ -35,6 +36,7 @@ import (
 	_ "yunion.io/x/onecloud/pkg/monitor/notifydrivers"
 	"yunion.io/x/onecloud/pkg/monitor/options"
 	"yunion.io/x/onecloud/pkg/monitor/registry"
+	"yunion.io/x/onecloud/pkg/monitor/subscriptionmodel"
 	"yunion.io/x/onecloud/pkg/monitor/suggestsysdrivers"
 	_ "yunion.io/x/onecloud/pkg/monitor/tasks"
 	_ "yunion.io/x/onecloud/pkg/monitor/tsdb/driver/influxdb"
@@ -62,10 +64,15 @@ func StartService() {
 
 	cron := cronman.InitCronJobManager(true, opts.CronJobWorkerCount)
 	suggestsysdrivers.InitSuggestSysRuleCronjob()
+	cron.AddJobAtIntervalsWithStartRun("InitScopeSuggestConfigs", time.Duration(opts.InitScopeSuggestConfigIntervalSeconds)*time.Second, models.SuggestSysRuleConfigManager.InitScopeConfigs, true)
 	cron.Start()
 	defer cron.Stop()
 
-	common_app.ServeForever(app, baseOpts)
+	subscriptionmodel.SubscriptionManager.AddSubscription()
+	models.CommonAlertManager.SetSubscriptionManager(subscriptionmodel.SubscriptionManager)
+
+	InitInfluxDBSubscriptionHandlers(app, baseOpts)
+	//common_app.ServeForever(app, baseOpts)
 }
 
 func startServices() {

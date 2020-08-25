@@ -94,7 +94,7 @@ func (manager *SInstanceSnapshotManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SVirtualResourceBaseManager.ListItemFilter")
 	}
 
-	guestStr := query.Server
+	guestStr := query.ServerId
 	if len(guestStr) > 0 {
 		guestObj, err := GuestManager.FetchByIdOrName(userCred, guestStr)
 		if err != nil {
@@ -167,6 +167,7 @@ func (self *SInstanceSnapshot) getMoreDetails(userCred mcclient.TokenCredential,
 			Status:        snapshots[i].Status,
 			StorageType:   snapshots[i].GetStorageType(),
 		})
+		out.Size += snapshots[i].Size
 
 		if len(snapshots[i].StorageId) > 0 && out.StorageType == "" {
 			out.StorageType = snapshots[i].GetStorageType()
@@ -273,7 +274,7 @@ func (manager *SInstanceSnapshotManager) CreateInstanceSnapshot(
 	if osVersion := guest.GetMetadata("os_version", nil); len(osVersion) > 0 {
 		serverMetadata.Set("os_version", jsonutils.NewString(osVersion))
 	}
-	secs := guest.GetSecgroups()
+	secs, _ := guest.GetSecgroups()
 	if len(secs) > 0 {
 		secIds := make([]string, len(secs))
 		for i := 0; i < len(secs); i++ {
@@ -284,7 +285,7 @@ func (manager *SInstanceSnapshotManager) CreateInstanceSnapshot(
 	instanceSnapshot.OsType = guest.OsType
 	instanceSnapshot.ServerMetadata = serverMetadata
 	instanceSnapshot.InstanceType = guest.InstanceType
-	err := manager.TableSpec().Insert(instanceSnapshot)
+	err := manager.TableSpec().Insert(ctx, instanceSnapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +316,7 @@ func (self *SInstanceSnapshot) ToInstanceCreateInput(
 		sourceInput.VcpuCount = serverConfig.Ncpu
 	}
 	if len(self.KeypairId) > 0 {
-		sourceInput.Keypair = self.KeypairId
+		sourceInput.KeypairId = self.KeypairId
 	}
 	if self.SecGroups != nil {
 		secGroups := make([]string, 0)

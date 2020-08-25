@@ -24,6 +24,18 @@ import (
 
 type SSQLDriverClass struct{}
 
+func (self *SSQLDriverClass) IsSso() bool {
+	return false
+}
+
+func (self *SSQLDriverClass) ForceSyncUser() bool {
+	return true
+}
+
+func (self *SSQLDriverClass) GetDefaultIconUri(tmpName string) string {
+	return ""
+}
+
 func (self *SSQLDriverClass) SingletonInstance() bool {
 	return true
 }
@@ -32,15 +44,15 @@ func (self *SSQLDriverClass) SyncMethod() string {
 	return api.IdentityProviderSyncLocal
 }
 
-func (self *SSQLDriverClass) NewDriver(idpId, idpName, template, targetDomainId string, autoCreateProject bool, conf api.TConfigs) (driver.IIdentityBackend, error) {
-	return NewSQLDriver(idpId, idpName, template, targetDomainId, autoCreateProject, conf)
+func (self *SSQLDriverClass) NewDriver(idpId, idpName, template, targetDomainId string, conf api.TConfigs) (driver.IIdentityBackend, error) {
+	return NewSQLDriver(idpId, idpName, template, targetDomainId, conf)
 }
 
 func (self *SSQLDriverClass) Name() string {
 	return api.IdentityDriverSQL
 }
 
-func (self *SSQLDriverClass) ValidateConfig(ctx context.Context, userCred mcclient.TokenCredential, conf api.TConfigs) (api.TConfigs, error) {
+func (self *SSQLDriverClass) ValidateConfig(ctx context.Context, userCred mcclient.TokenCredential, template string, conf api.TConfigs, idpId, domainId string) (api.TConfigs, error) {
 	return conf, nil
 }
 

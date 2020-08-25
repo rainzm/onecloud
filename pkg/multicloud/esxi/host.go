@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -644,15 +645,16 @@ func (self *SHost) CreateVM(desc *cloudprovider.SManagedVMCreateConfig) (cloudpr
 }
 
 type SCreateVMParam struct {
-	Name   string
-	Uuid   string
-	OsName string
-	Cpu    int
-	Mem    int
-	Bios   string
-	Cdrom  jsonutils.JSONObject
-	Disks  []SDiskInfo
-	Nics   []jsonutils.JSONObject
+	Name         string
+	Uuid         string
+	OsName       string
+	Cpu          int
+	Mem          int
+	Bios         string
+	Cdrom        jsonutils.JSONObject
+	Disks        []SDiskInfo
+	Nics         []jsonutils.JSONObject
+	ResourcePool string
 }
 
 type SDiskInfo struct {
@@ -760,14 +762,15 @@ func (self *SHost) DoCreateVM(ctx context.Context, ds *SDatastore, params SCreat
 	var (
 		scsiIdx = 0
 		ideIdx  = 0
+		ide1un  = 0
+		ide2un  = 1
 		index   = 0
 		ctrlKey = 0
 	)
 	for _, disk := range disks {
 		imagePath := disk.ImagePath
-		var size int64 = 0
+		var size = disk.Size
 		if len(imagePath) == 0 {
-			size = disk.Size
 			if size == 0 {
 				size = 30 * 1024
 			}
@@ -792,13 +795,22 @@ func (self *SHost) DoCreateVM(ctx context.Context, ds *SDatastore, params SCreat
 				scsiIdx++
 			}
 		} else {
-			ctrlKey = 200 + ideIdx/2
-			index = ideIdx % 2
+			ideno := ideIdx % 2
+			if ideno == 0 {
+				index = ideIdx/2 + ide1un
+			} else {
+				index = ideIdx/2 + ide2un
+			}
+			ctrlKey = 200 + ideno
 			ideIdx += 1
 		}
 		log.Debugf("size: %d, image path: %s, uuid: %s, index: %d, ctrlKey: %d, driver: %s.", size, imagePath, uuid,
 			index, ctrlKey, disk.Driver)
+<<<<<<< HEAD
 		spec := addDevSpec(NewDiskDev(size, imagePath, uuid, int32(index), 2000, int32(ctrlKey)))
+=======
+		spec := addDevSpec(NewDiskDev(size, imagePath, uuid, int32(index), 2000, int32(ctrlKey), 0))
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 		spec.FileOperation = "create"
 		deviceChange = append(deviceChange, spec)
 	}
@@ -840,9 +852,9 @@ func (self *SHost) DoCreateVM(ctx context.Context, ds *SDatastore, params SCreat
 		return nil, errors.Wrap(err, "object.DataCenter.Folders")
 	}
 	vmFolder := folders.VmFolder
-	resourcePool, err := self.GetResourcePool()
+	resourcePool, err := self.SyncResourcePool(params.ResourcePool)
 	if err != nil {
-		return nil, errors.Wrap(err, "SHost.GetResourcePool")
+		return nil, errors.Wrap(err, "SyncResourcePool")
 	}
 	task, err := vmFolder.CreateVM(ctx, spec, resourcePool, self.GetoHostSystem())
 	if err != nil {
@@ -928,6 +940,7 @@ func (host *SHost) CloneVM(ctx context.Context, from *SVirtualMachine, ds *SData
 		ctlKey = minDevKey(scsiDevs)
 	}
 	// change disk if set
+	newSizes := make([]int64, 0, len(from.vdisks))
 	if params.Disks != nil && len(params.Disks) > 0 {
 		var (
 			i    int
@@ -941,15 +954,9 @@ func (host *SHost) CloneVM(ctx context.Context, from *SVirtualMachine, ds *SData
 			}
 			size := disk.Size
 			if size == 0 {
-				continue
+				size = 30 * 1024
 			}
-			dev := from.vdisks[i].getVirtualDisk()
-			dev.CapacityInKB = size * 1024
-
-			deviceChange = append(deviceChange, &types.VirtualDeviceConfigSpec{
-				Operation: types.VirtualDeviceConfigSpecOperationEdit,
-				Device:    dev,
-			})
+			newSizes = append(newSizes, size)
 		}
 
 		// create new disk
@@ -971,7 +978,7 @@ func (host *SHost) CloneVM(ctx context.Context, from *SVirtualMachine, ds *SData
 					size = 30 * 1024
 				}
 				uuid := params.Disks[i].DiskId
-				spec := addDevSpec(NewDiskDev(size, "", uuid, index, key, ctlKey))
+				spec := addDevSpec(NewDiskDev(size, "", uuid, index, key, ctlKey, 0))
 				spec.FileOperation = "create"
 				deviceChange = append(deviceChange, spec)
 			}
@@ -986,9 +993,9 @@ func (host *SHost) CloneVM(ctx context.Context, from *SVirtualMachine, ds *SData
 	if err != nil {
 		return nil, errors.Wrap(err, "object.DataCenter.Folders")
 	}
-	resourcePool, err := host.GetResourcePool()
+	resourcePool, err := host.SyncResourcePool(params.ResourcePool)
 	if err != nil {
-		return nil, errors.Wrap(err, "SHost.GetResourcePool")
+		return nil, errors.Wrap(err, "SyncResourcePool")
 	}
 
 	folderref := folders.VmFolder.Reference()
@@ -1020,7 +1027,7 @@ func (host *SHost) CloneVM(ctx context.Context, from *SVirtualMachine, ds *SData
 		MemoryMB: int64(params.Mem),
 	}
 	cloneSpec.Config = &spec
-	task, err := ovm.Clone(ctx, folders.VmFolder, params.Name, *cloneSpec)
+	task, err := ovm.Clone(ctx, folders.VmFolder, name, *cloneSpec)
 	if err != nil {
 		return nil, errors.Wrap(err, "object.VirtualMachine.Clone")
 	}
@@ -1035,7 +1042,16 @@ func (host *SHost) CloneVM(ctx context.Context, from *SVirtualMachine, ds *SData
 		return nil, errors.Wrap(err, "fail to fetch virtual machine just created")
 	}
 
-	return NewVirtualMachine(host.manager, &moVM, host.datacenter), nil
+	// resize the disk
+	vm := NewVirtualMachine(host.manager, &moVM, host.datacenter)
+	sort.Sort(byDiskType(vm.vdisks))
+	for i, s := range newSizes {
+		err := vm.vdisks[i].Resize(ctx, s)
+		if err != nil {
+			log.Errorf("no.%d vdisk.Resize failed: %s", i, err.Error())
+		}
+	}
+	return vm, nil
 }
 
 func (host *SHost) changeNic(device types.BaseVirtualDevice, update types.BaseVirtualDevice) {
@@ -1353,7 +1369,7 @@ func (host *SHost) GetoHostSystem() *object.HostSystem {
 func (host *SHost) GetResourcePool() (*object.ResourcePool, error) {
 	var err error
 	if host.parent == nil {
-		host.parent, err = host.getResourcePool()
+		host.parent, err = host.getParent()
 		if err != nil {
 			return nil, err
 		}
@@ -1361,7 +1377,7 @@ func (host *SHost) GetResourcePool() (*object.ResourcePool, error) {
 	return object.NewResourcePool(host.manager.client.Client, *host.parent.ResourcePool), nil
 }
 
-func (host *SHost) getResourcePool() (*mo.ComputeResource, error) {
+func (host *SHost) getParent() (*mo.ComputeResource, error) {
 	var mcr *mo.ComputeResource
 	var parent interface{}
 
@@ -1379,19 +1395,58 @@ func (host *SHost) getResourcePool() (*mo.ComputeResource, error) {
 		return nil, errors.Error(fmt.Sprintf("unknown host parent type: %s", moHost.Parent.Type))
 	}
 
-	err := host.manager.reference2Object(*moHost.Parent, []string{"resourcePool"}, parent)
+	err := host.manager.reference2Object(*moHost.Parent, []string{"name", "resourcePool"}, parent)
 	if err != nil {
 		return nil, errors.Wrap(err, "SESXiClient.reference2Object")
 	}
 	return mcr, nil
 }
 
-func (host *SHost) GetCluster() (*mo.ComputeResource, error) {
-	return host.getResourcePool()
+func (host *SHost) GetResourcePools() ([]mo.ResourcePool, error) {
+	cluster, err := host.GetCluster()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetCluster")
+	}
+	return cluster.ListResourcePools()
+}
+
+func (host *SHost) GetCluster() (*SCluster, error) {
+	cluster, err := host.getCluster()
+	if err != nil {
+		return nil, errors.Wrap(err, "getCluster")
+	}
+	return NewCluster(host.manager, cluster, host.datacenter), nil
+}
+
+func (host *SHost) SyncResourcePool(name string) (*object.ResourcePool, error) {
+	cluster, err := host.GetCluster()
+	if err != nil {
+		log.Errorf("failed to get host %s cluster info: %v", host.GetName(), err)
+		return host.GetResourcePool()
+	}
+	pool, err := cluster.SyncResourcePool(name)
+	if err != nil {
+		log.Errorf("failed to sync resourcePool(%s) for cluster %s error: %v", name, cluster.GetName(), err)
+		return host.GetResourcePool()
+	}
+	return object.NewResourcePool(host.manager.client.Client, pool.Reference()), nil
+}
+
+func (host *SHost) getCluster() (*mo.ClusterComputeResource, error) {
+	moHost := host.getHostSystem()
+	if moHost.Parent.Type != "ClusterComputeResource" {
+		return nil, fmt.Errorf("host %s parent is not the cluster resource", host.GetName())
+	}
+	cluster := &mo.ClusterComputeResource{}
+	err := host.manager.reference2Object(*moHost.Parent, []string{"name", "resourcePool"}, cluster)
+	if err != nil {
+		return nil, errors.Wrap(err, "SESXiClient.reference2Object")
+	}
+	return cluster, nil
 }
 
 func (host *SHost) GetSiblingHosts() ([]*SHost, error) {
-	rp, err := host.GetCluster()
+	rp, err := host.getParent()
 	if err != nil {
 		return nil, err
 	}

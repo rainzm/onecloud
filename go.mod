@@ -3,6 +3,7 @@ module yunion.io/x/onecloud
 go 1.12
 
 require (
+	bazil.org/fuse v0.0.0-20180421153158-65cc252bf669
 	cloud.google.com/go/storage v1.5.0
 	github.com/360EntSecGroup-Skylar/excelize v1.4.0
 	github.com/Azure/azure-sdk-for-go v36.1.0+incompatible
@@ -13,8 +14,9 @@ require (
 	github.com/Microsoft/azure-vhd-utils v0.0.0-20181115010904-44cbada2ece3
 	github.com/RoaringBitmap/roaring v0.4.16 // indirect
 	github.com/Shopify/sarama v1.20.0 // indirect
+	github.com/Shopify/toxiproxy v2.1.4+incompatible // indirect
 	github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6 // indirect
-	github.com/aliyun/alibaba-cloud-sdk-go v0.0.0-20180112035716-b5829a0278c8
+	github.com/aliyun/alibaba-cloud-sdk-go v0.0.0-20181031125837-1b0ec6f46eb1
 	github.com/aliyun/aliyun-oss-go-sdk v2.0.4+incompatible
 	github.com/anacrolix/dht v0.0.0-20181129074040-b09db78595aa // indirect
 	github.com/anacrolix/go-libutp v0.0.0-20180808010927-aebbeb60ea05 // indirect
@@ -22,8 +24,10 @@ require (
 	github.com/anacrolix/mmsg v0.0.0-20180808012353-5adb2c1127c0 // indirect
 	github.com/anacrolix/torrent v0.0.0-20181129073333-cc531b8c4a80
 	github.com/aokoli/goutils v1.0.1
+	github.com/apache/thrift v0.12.0 // indirect
 	github.com/aws/aws-sdk-go v1.21.4
 	github.com/baiyubin/aliyun-sts-go-sdk v0.0.0-20180326062324-cfa1a18b161f // indirect
+	github.com/beevik/etree v1.1.0 // indirect
 	github.com/benbjohnson/clock v1.0.0
 	github.com/bitly/go-simplejson v0.5.0
 	github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 // indirect
@@ -32,10 +36,11 @@ require (
 	github.com/coredns/coredns v1.3.0
 	github.com/coreos/go-systemd v0.0.0-20190620071333-e64a0ec8b42a // indirect
 	github.com/coreos/pkg v0.0.0-20180928190104-399ea9e2e55f // indirect
-	github.com/denisenkom/go-mssqldb v0.0.0-20190806190131-db2462fef53b // indirect
 	github.com/dnstap/golang-dnstap v0.0.0-20170829151710-2cf77a2b5e11 // indirect
+	github.com/eapache/go-resiliency v1.1.0 // indirect
+	github.com/eapache/go-xerial-snappy v0.0.0-20180814174437-776d5712da21 // indirect
+	github.com/eapache/queue v1.1.0 // indirect
 	github.com/edsrzf/mmap-go v1.0.0 // indirect
-	github.com/erikstmartin/go-testdb v0.0.0-20160219214506-8d10e4a1bae5 // indirect
 	github.com/farsightsec/golang-framestream v0.0.0-20181102145529-8a0cb8ba8710 // indirect
 	github.com/fatih/color v1.7.0
 	github.com/fernet/fernet-go v0.0.0-20180830025343-9eac43b88a5e
@@ -63,13 +68,14 @@ require (
 	github.com/hako/durafmt v0.0.0-20180520121703-7b7ae1e72ead
 	github.com/huandu/xstrings v1.2.0 // indirect
 	github.com/imdario/mergo v0.3.6 // indirect
-	github.com/jinzhu/gorm v1.9.1
-	github.com/jinzhu/inflection v1.0.0 // indirect
-	github.com/jinzhu/now v1.0.1 // indirect
+	github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0 // indirect
 	github.com/koding/websocketproxy v0.0.0-20181220232114-7ed82d81a28c
 	github.com/kr/pty v1.1.5
-	github.com/lib/pq v1.2.0 // indirect
+	github.com/lestrrat-go/jwx v1.0.2
+	github.com/lestrrat/go-jwx v0.0.0-20180221005942-b7d4802280ae
+	github.com/lestrrat/go-pdebug v0.0.0-20180220043741-569c97477ae8 // indirect
 	github.com/libvirt/libvirt-go-xml v5.2.0+incompatible
+	github.com/ma314smith/signedxml v0.0.0-20200410192636-c342a2d0ae60
 	github.com/mattn/go-runewidth v0.0.4 // indirect
 	github.com/mattn/go-sqlite3 v1.10.0 // indirect
 	github.com/mattn/go-tty v0.0.0-20181127064339-e4f871175a2f // indirect
@@ -89,13 +95,15 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/pkg/term v0.0.0-20181116001808-27bbf2edb814 // indirect
 	github.com/pquerna/otp v1.2.0
+	github.com/rcrowley/go-metrics v0.0.0-20181016184325-3113b8401b8a // indirect
 	github.com/serialx/hashring v0.0.0-20180504054112-49a4782e9908
+	github.com/sevlyar/go-daemon v0.1.5
 	github.com/shirou/gopsutil v2.18.10+incompatible
 	github.com/shirou/w32 v0.0.0-20160930032740-bb4de0191aa4 // indirect
 	github.com/skip2/go-qrcode v0.0.0-20190110000554-dc11ecdae0a9
 	github.com/smartystreets/goconvey v1.6.4
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/stretchr/testify v1.4.0
+	github.com/stretchr/testify v1.5.1
 	github.com/tencentcloud/tencentcloud-sdk-go v3.0.135+incompatible
 	github.com/tencentyun/cos-go-sdk-v5 v0.0.0-20191108095731-8ca4b370cde4
 	github.com/tinylib/msgp v1.1.0 // indirect
@@ -108,32 +116,42 @@ require (
 	go.etcd.io/etcd v0.5.0-alpha.5.0.20191023171146-3cf2f69b5738
 	go.uber.org/atomic v1.4.0 // indirect
 	golang.org/x/crypto v0.0.0-20191206172530-e9b2fee46413
-	golang.org/x/net v0.0.0-20191209160850-c0dbc17a3553
+	golang.org/x/net v0.0.0-20200226121028-0de0cce0169b
 	golang.org/x/oauth2 v0.0.0-20191202225959-858c2ad4c8b6
 	golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e
 	golang.org/x/sys v0.0.0-20191228213918-04cbcbbfeed8
+	golang.org/x/text v0.3.3
+	golang.org/x/tools v0.0.0-20200515220128-d3bf790afa53 // indirect
 	golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20191008142428-8d021180e987
 	google.golang.org/genproto v0.0.0-20191230161307-f3c370f40bfb
 	google.golang.org/grpc v1.26.0
 	gopkg.in/asn1-ber.v1 v1.0.0-20181015200546-f715ec2f112d // indirect
+	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
+	gopkg.in/fatih/set.v0 v0.2.1
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.44.0 // indirect
 	gopkg.in/ldap.v3 v3.0.3
 	gopkg.in/yaml.v2 v2.2.8
+	honnef.co/go/tools v0.0.1-2020.1.4 // indirect
 	k8s.io/api v0.17.3
 	k8s.io/apimachinery v0.17.3
 	k8s.io/client-go v9.0.0+incompatible
 	k8s.io/cluster-bootstrap v0.17.3
 	k8s.io/kubernetes v1.16.0
 	yunion.io/x/executor v0.0.0-20200227030256-a18417815e74
-	yunion.io/x/jsonutils v0.0.0-20200415132054-2bf8a5e94501
+	yunion.io/x/jsonutils v0.0.0-20200814075449-927b118adbd8
 	yunion.io/x/log v0.0.0-20200313080802-57a4ce5966b3
+<<<<<<< HEAD
 	yunion.io/x/ovsdb v0.0.0-20200512112253-a3601d1ee987
 	yunion.io/x/pkg v0.0.0-20200516092703-0a53bc9270aa
+=======
+	yunion.io/x/ovsdb v0.0.0-20200526071744-27bf0940cbc7
+	yunion.io/x/pkg v0.0.0-20200814072949-4f1b541857d6
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	yunion.io/x/s3cli v0.0.0-20190917004522-13ac36d8687e
-	yunion.io/x/sqlchemy v0.0.0-20200312002602-1177cd8fbc57
-	yunion.io/x/structarg v0.0.0-20200423163001-168d0687be7e
+	yunion.io/x/sqlchemy v0.0.0-20200820050957-1542f05b9fcd
+	yunion.io/x/structarg v0.0.0-20200720093445-9f850fa222ce
 )
 
 replace (

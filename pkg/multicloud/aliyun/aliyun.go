@@ -53,6 +53,7 @@ const (
 	ALIYUN_RAM_API_VERSION = "2015-05-01"
 	ALIYUN_API_VERION_RDS  = "2014-08-15"
 	ALIYUN_RM_API_VERSION  = "2020-03-31"
+	ALIYUN_STS_API_VERSION = "2015-04-01"
 )
 
 type AliyunClientConfig struct {
@@ -127,9 +128,9 @@ func jsonRequest(client *sdk.Client, domain, apiVersion, apiName string, params 
 					return nil, err
 				}
 			}
-			for _, code := range []string{"404 Not Found"} {
+			for _, code := range []string{"404 Not Found", "EntityNotExist.Role", "EntityNotExist.Group"} {
 				if strings.Contains(err.Error(), code) {
-					return nil, cloudprovider.ErrNotFound
+					return nil, errors.Wrapf(cloudprovider.ErrNotFound, err.Error())
 				}
 			}
 			for _, code := range []string{
@@ -462,6 +463,7 @@ func (region *SAliyunClient) GetCapabilities() []string {
 		cloudprovider.CLOUD_CAPABILITY_RDS,
 		cloudprovider.CLOUD_CAPABILITY_CACHE,
 		cloudprovider.CLOUD_CAPABILITY_EVENT,
+		cloudprovider.CLOUD_CAPABILITY_CLOUDID,
 	}
 	return caps
 }

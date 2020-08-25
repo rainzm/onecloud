@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/secrules"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
@@ -28,6 +30,7 @@ import (
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/billing"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
 type SBaseRegionDriver struct {
@@ -203,6 +206,10 @@ func (self *SBaseRegionDriver) RequestBingToNatgateway(ctx context.Context, task
 	return fmt.Errorf("Not implement RequestBindIPToNatgateway")
 }
 
+func (self *SBaseRegionDriver) IsVpcCreateNeedInputCidr() bool {
+	return true
+}
+
 func (self *SBaseRegionDriver) RequestCreateVpc(ctx context.Context, userCred mcclient.TokenCredential, region *models.SCloudregion, vpc *models.SVpc, task taskman.ITask) error {
 	return fmt.Errorf("Not implement RequestCreateVpc")
 }
@@ -211,7 +218,7 @@ func (self *SBaseRegionDriver) RequestDeleteVpc(ctx context.Context, userCred mc
 	return fmt.Errorf("Not implement RequestDeleteVpc")
 }
 
-func (self *SBaseRegionDriver) RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *models.SCloudregion, vpc *models.SVpc, secgroup *models.SSecurityGroup, classic bool, task taskman.ITask) error {
+func (self *SBaseRegionDriver) RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *models.SCloudregion, vpc *models.SVpc, secgroup *models.SSecurityGroup, classic bool, remoteProjectId string, task taskman.ITask) error {
 	return fmt.Errorf("Not Implemented RequestCacheSecurityGroup")
 }
 
@@ -235,12 +242,40 @@ func (self *SBaseRegionDriver) GetDefaultSecurityGroupVpcId() string {
 	return api.NORMAL_VPC_ID
 }
 
+func (self *SBaseRegionDriver) GetSecurityGroupPublicScope() rbacutils.TRbacScope {
+	return rbacutils.ScopeSystem
+}
+
 func (self *SBaseRegionDriver) GetSecurityGroupVpcId(ctx context.Context, userCred mcclient.TokenCredential, region *models.SCloudregion, host *models.SHost, vpc *models.SVpc, classic bool) (string, error) {
 	return "", cloudprovider.ErrNotImplemented
 }
 
-func (self *SBaseRegionDriver) RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *models.SVpc, secgroup *models.SSecurityGroup) (string, error) {
+func (self *SBaseRegionDriver) RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *models.SVpc, secgroup *models.SSecurityGroup, removeProjectId string) (string, error) {
 	return "", fmt.Errorf("Not Implemented RequestSyncSecurityGroup")
+}
+
+func (self *SBaseRegionDriver) GetSecurityGroupRuleOrder() cloudprovider.TPriorityOrder {
+	return cloudprovider.PriorityOrderByDesc
+}
+
+func (self *SBaseRegionDriver) IsOnlySupportAllowRules() bool {
+	return false
+}
+
+func (self *SBaseRegionDriver) GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("in:deny any")}
+}
+
+func (self *SBaseRegionDriver) GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("out:allow any")}
+}
+
+func (self *SBaseRegionDriver) GetSecurityGroupRuleMaxPriority() int {
+	return 100
+}
+
+func (self *SBaseRegionDriver) GetSecurityGroupRuleMinPriority() int {
+	return 1
 }
 
 func (self *SBaseRegionDriver) ValidateCreateDBInstanceData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input api.DBInstanceCreateInput, skus []models.SDBInstanceSku, network *models.SNetwork) (api.DBInstanceCreateInput, error) {
@@ -263,7 +298,7 @@ func (self *SBaseRegionDriver) GetSecgroupVpcid(vpcId string) string {
 	return vpcId
 }
 
-func (self *SBaseRegionDriver) InitDBInstanceUser(dbinstance *models.SDBInstance, task taskman.ITask, desc *cloudprovider.SManagedDBInstanceCreateConfig) error {
+func (self *SBaseRegionDriver) InitDBInstanceUser(ctx context.Context, dbinstance *models.SDBInstance, task taskman.ITask, desc *cloudprovider.SManagedDBInstanceCreateConfig) error {
 	return nil
 }
 
@@ -305,6 +340,10 @@ func (self *SBaseRegionDriver) ValidateResetDBInstancePassword(ctx context.Conte
 
 func (self *SBaseRegionDriver) IsSupportKeepDBInstanceManualBackup() bool {
 	return false
+}
+
+func (self *SBaseRegionDriver) ValidateDBInstanceRecovery(ctx context.Context, userCred mcclient.TokenCredential, instance *models.SDBInstance, backup *models.SDBInstanceBackup, input api.SDBInstanceRecoveryConfigInput) error {
+	return errors.Wrap(cloudprovider.ErrNotImplemented, "ValidateDBInstanceRecovery")
 }
 
 func (self *SBaseRegionDriver) IsSupportedDBInstance() bool {

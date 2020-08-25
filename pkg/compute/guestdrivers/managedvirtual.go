@@ -27,6 +27,7 @@ import (
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/osprofile"
 	"yunion.io/x/pkg/utils"
+	"yunion.io/x/sqlchemy"
 
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -71,6 +72,13 @@ func (self *SManagedVirtualizedGuestDriver) GetJsonDescAtHost(ctx context.Contex
 		net := nics[0].GetNetwork()
 		config.ExternalNetworkId = net.ExternalId
 		config.IpAddr = nics[0].IpAddr
+	}
+
+	var err error
+	provider := host.GetCloudprovider()
+	config.ProjectId, err = provider.SyncProject(ctx, userCred, guest.ProjectId)
+	if err != nil {
+		log.Errorf("failed to sync project %s for create %s guest %s error: %v", guest.ProjectId, provider.Provider, guest.Name, err)
 	}
 
 	disks := guest.GetDisks()
@@ -311,9 +319,12 @@ func (self *SManagedVirtualizedGuestDriver) RequestDeployGuestOnHost(ctx context
 			return errors.Wrap(err, "GetSecurityGroupVpcId")
 		}
 
-		secgroups := guest.GetSecgroups()
+		secgroups, err := guest.GetSecgroups()
+		if err != nil {
+			return errors.Wrap(err, "GetSecgroups")
+		}
 		for i, secgroup := range secgroups {
-			externalId, err := region.GetDriver().RequestSyncSecurityGroup(ctx, task.GetUserCred(), vpcId, vpc, &secgroup)
+			externalId, err := region.GetDriver().RequestSyncSecurityGroup(ctx, task.GetUserCred(), vpcId, vpc, &secgroup, desc.ProjectId)
 			if err != nil {
 				return errors.Wrap(err, "RequestSyncSecurityGroup")
 			}
@@ -434,6 +445,7 @@ func (self *SManagedVirtualizedGuestDriver) RemoteDeployGuestForCreate(ctx conte
 		if err != nil {
 			return nil, err
 		}
+
 		db.SetExternalId(guest, userCred, iVM.GetGlobalId())
 		err = iVM.SetSecurityGroups(desc.ExternalSecgroupIds)
 		if err != nil {
@@ -441,7 +453,9 @@ func (self *SManagedVirtualizedGuestDriver) RemoteDeployGuestForCreate(ctx conte
 		}
 
 		if hostId := iVM.GetIHostId(); len(hostId) > 0 {
-			host, err := db.FetchByExternalId(models.HostManager, hostId)
+			host, err := db.FetchByExternalIdAndManagerId(models.HostManager, hostId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", host.ManagerId)
+			})
 			if err != nil {
 				log.Warningf("failed to found new hostId(%s) for ivm %s(%s) error: %v", hostId, guest.Name, guest.Id, err)
 			} else if host.GetId() != guest.HostId {
@@ -472,20 +486,20 @@ func (self *SManagedVirtualizedGuestDriver) RemoteDeployGuestForCreate(ctx conte
 		return nil, err
 	}
 
+	ret, expect := 0, len(desc.DataDisks)+1
 	err = cloudprovider.RetryUntil(func() (bool, error) {
 		idisks, err := iVM.GetIDisks()
 		if err != nil {
-			log.Errorf("fail to find vm disks %s after create", err)
-			return false, err
+			return false, errors.Wrap(err, "iVM.GetIDisks")
 		}
-		if len(idisks) == len(desc.DataDisks)+1 {
+		ret = len(idisks)
+		if ret >= expect { // 有可能自定义镜像里面也有磁盘，会导致返回的磁盘多于创建时的磁盘
 			return true, nil
-		} else {
-			return false, nil
 		}
+		return false, nil
 	}, 10)
 	if err != nil {
-		return nil, errors.Wrap(err, "GuestDriver.RemoteDeployGuestForCreate.RetryUntil")
+		return nil, errors.Wrapf(err, "GuestDriver.RemoteDeployGuestForCreate.RetryUntil expect %d disks return %d disks", expect, ret)
 	}
 
 	guest.GetDriver().RemoteActionAfterGuestCreated(ctx, userCred, guest, host, iVM, &desc)
@@ -878,7 +892,13 @@ func (self *SManagedVirtualizedGuestDriver) OnGuestDeployTaskDataReceived(ctx co
 				}
 
 				if len(diskInfo[i].StorageExternalId) > 0 {
-					storage, err := db.FetchByExternalId(models.StorageManager, diskInfo[i].StorageExternalId)
+					storage, err := db.FetchByExternalIdAndManagerId(models.StorageManager, diskInfo[i].StorageExternalId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+						host := guest.GetHost()
+						if host != nil {
+							return q.Equals("manager_id", host.ManagerId)
+						}
+						return q
+					})
 					if err != nil {
 						log.Warningf("failed to found storage by externalId %s error: %v", diskInfo[i].StorageExternalId, err)
 					} else if disk.StorageId != storage.GetId() {
@@ -959,10 +979,22 @@ func (self *SManagedVirtualizedGuestDriver) RequestSyncSecgroupsOnHost(ctx conte
 		return errors.Wrap(err, "GetSecurityGroupVpcId")
 	}
 
-	secgroups := guest.GetSecgroups()
+	remoteProjectId := ""
+	provider := host.GetCloudprovider()
+	if provider != nil {
+		remoteProjectId, err = provider.SyncProject(ctx, task.GetUserCred(), guest.ProjectId)
+		if err != nil {
+			log.Errorf("failed to sync project %s for guest %s error: %v", guest.ProjectId, guest.Name, err)
+		}
+	}
+
+	secgroups, err := guest.GetSecgroups()
+	if err != nil {
+		return errors.Wrap(err, "GetSecgroups")
+	}
 	externalIds := []string{}
 	for _, secgroup := range secgroups {
-		externalId, err := region.GetDriver().RequestSyncSecurityGroup(ctx, task.GetUserCred(), vpcId, vpc, &secgroup)
+		externalId, err := region.GetDriver().RequestSyncSecurityGroup(ctx, task.GetUserCred(), vpcId, vpc, &secgroup, remoteProjectId)
 		if err != nil {
 			return errors.Wrap(err, "RequestSyncSecurityGroup")
 		}
@@ -1047,7 +1079,7 @@ func (self *SManagedVirtualizedGuestDriver) RequestAssociateEip(ctx context.Cont
 			return nil, fmt.Errorf("ManagedVirtualizedGuestDriver.RequestAssociateEip fail to local associate EIP %s", err)
 		}
 
-		eip.SetStatus(userCred, api.EIP_STATUS_READY, "associate")
+		eip.SetStatus(userCred, api.EIP_STATUS_READY, api.EIP_STATUS_ASSOCIATE)
 		return nil, nil
 	})
 

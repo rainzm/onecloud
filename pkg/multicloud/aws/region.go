@@ -80,6 +80,12 @@ const (
 	EC2_SERVICE_NAME = "ec2"
 	EC2_SERVICE_ID   = "EC2"
 
+	IAM_SERVICE_NAME = "iam"
+	IAM_SERVICE_ID   = "IAM"
+
+	STS_SERVICE_NAME = "sts"
+	STS_SERVICE_ID   = "STS"
+
 	CLOUDWATCH_SERVICE_NAME = "monitoring"
 	CLOUDWATCH_SERVICE_ID   = "CloudWatch"
 )
@@ -256,60 +262,11 @@ func Build(r *request.Request) {
 }
 
 func (self *SRegion) rdsRequest(apiName string, params map[string]string, retval interface{}) error {
-	session, err := self.getAwsSession()
-	if err != nil {
-		return err
-	}
-	c := session.ClientConfig(RDS_SERVICE_NAME)
-	metadata := metadata.ClientInfo{
-		ServiceName:   RDS_SERVICE_NAME,
-		ServiceID:     RDS_SERVICE_ID,
-		SigningName:   c.SigningName,
-		SigningRegion: c.SigningRegion,
-		Endpoint:      c.Endpoint,
-		APIVersion:    "2014-10-31",
-	}
-
-	if self.client.debug {
-		logLevel := aws.LogLevelType(uint(aws.LogDebugWithRequestErrors) + uint(aws.LogDebugWithHTTPBody))
-		c.Config.LogLevel = &logLevel
-	}
-
-	client := client.New(*c.Config, metadata, c.Handlers)
-	client.Handlers.Sign.PushBackNamed(v4.SignRequestHandler)
-	client.Handlers.Build.PushBackNamed(buildHandler)
-	client.Handlers.Unmarshal.PushBackNamed(UnmarshalHandler)
-	client.Handlers.UnmarshalMeta.PushBackNamed(query.UnmarshalMetaHandler)
-	client.Handlers.UnmarshalError.PushBackNamed(query.UnmarshalErrorHandler)
-	return jsonRequest(client, apiName, params, retval, true)
+	return self.client.request(self.RegionId, RDS_SERVICE_NAME, RDS_SERVICE_ID, "2014-10-31", apiName, params, retval)
 }
 
 func (self *SRegion) ec2Request(apiName string, params map[string]string, retval interface{}) error {
-	session, err := self.getAwsSession()
-	if err != nil {
-		return err
-	}
-	c := session.ClientConfig(EC2_SERVICE_NAME)
-	metadata := metadata.ClientInfo{
-		ServiceName:   EC2_SERVICE_NAME,
-		ServiceID:     EC2_SERVICE_ID,
-		SigningName:   c.SigningName,
-		SigningRegion: c.SigningRegion,
-		Endpoint:      c.Endpoint,
-		APIVersion:    "2016-11-15",
-	}
-
-	requestErr := aws.LogDebugWithRequestErrors
-
-	c.Config.LogLevel = &requestErr
-
-	client := client.New(*c.Config, metadata, c.Handlers)
-	client.Handlers.Sign.PushBackNamed(v4.SignRequestHandler)
-	client.Handlers.Build.PushBackNamed(buildHandler)
-	client.Handlers.Unmarshal.PushBackNamed(UnmarshalHandler)
-	client.Handlers.UnmarshalMeta.PushBackNamed(query.UnmarshalMetaHandler)
-	client.Handlers.UnmarshalError.PushBackNamed(query.UnmarshalErrorHandler)
-	return jsonRequest(client, apiName, params, retval, true)
+	return self.client.request(self.RegionId, EC2_SERVICE_NAME, EC2_SERVICE_ID, "2016-11-15", apiName, params, retval)
 }
 
 func (self *SRegion) cloudWatchRequest(apiName string, params *cloudwatch.GetMetricStatisticsInput,
@@ -1070,8 +1027,8 @@ func (self *SRegion) GetISecurityGroupById(secgroupId string) (cloudprovider.ICl
 	return &secgroups[0], nil
 }
 
-func (self *SRegion) GetISecurityGroupByName(vpcId string, name string) (cloudprovider.ICloudSecurityGroup, error) {
-	secgroups, total, err := self.GetSecurityGroups(vpcId, name, "", 0, 1)
+func (self *SRegion) GetISecurityGroupByName(opts *cloudprovider.SecurityGroupFilterOptions) (cloudprovider.ICloudSecurityGroup, error) {
+	secgroups, total, err := self.GetSecurityGroups(opts.VpcId, opts.Name, "", 0, 1)
 	if err != nil {
 		return nil, err
 	}

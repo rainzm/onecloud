@@ -23,7 +23,7 @@ import (
 	"yunion.io/x/pkg/errors"
 )
 
-func NewDiskDev(sizeMb int64, templatePath string, uuid string, index int32, key int32, controlKey int32) *types.VirtualDisk {
+func NewDiskDev(sizeMb int64, templatePath string, uuid string, index int32, keyBase int32, controlKey int32, key int32) *types.VirtualDisk {
 	device := types.VirtualDisk{}
 
 	var backFile *types.VirtualDiskFlatVer2BackingInfo
@@ -48,7 +48,11 @@ func NewDiskDev(sizeMb int64, templatePath string, uuid string, index int32, key
 	}
 
 	device.ControllerKey = controlKey
-	device.Key = key + index
+	if key != 0 {
+		device.Key = key
+	} else {
+		device.Key = keyBase + index
+	}
 	device.UnitNumber = &index
 
 	return &device
@@ -114,7 +118,11 @@ func NewCDROMDev(path string, key, ctlKey int32) types.BaseVirtualDevice {
 
 	connectable := types.VirtualDeviceConnectInfo{AllowGuestControl: true, Status: "untried"}
 	if len(path) != 0 {
-		device.Backing = &types.VirtualCdromIsoBackingInfo{types.VirtualDeviceFileBackingInfo{FileName: path}}
+		device.Backing = &types.VirtualCdromIsoBackingInfo{
+			VirtualDeviceFileBackingInfo: types.VirtualDeviceFileBackingInfo{
+				FileName: path,
+			},
+		}
 		connectable.StartConnected = true
 	} else {
 		device.Backing = &types.VirtualCdromRemoteAtapiBackingInfo{}
@@ -205,8 +213,14 @@ func NewVNICDev(host *SHost, mac, driver string, vlanId int32, key, ctlKey, inde
 		nic.AddressType = "Generated"
 	}
 	if driver == "e1000" {
-		return &types.VirtualE1000{nic}, nil
+		return &types.VirtualE1000{
+			VirtualEthernetCard: nic,
+		}, nil
 	}
 
-	return &types.VirtualVmxnet3{types.VirtualVmxnet{nic}}, nil
+	return &types.VirtualVmxnet3{
+		VirtualVmxnet: types.VirtualVmxnet{
+			VirtualEthernetCard: nic,
+		},
+	}, nil
 }

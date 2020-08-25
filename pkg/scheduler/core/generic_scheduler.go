@@ -118,7 +118,7 @@ func (g *GenericScheduler) Schedule(unit *Unit, candidates []Candidater) (*Sched
 	trace := utiltrace.New(fmt.Sprintf("SessionID: %s, schedule info: %s",
 		schedInfo.SessionId, unit.Info()))
 
-	defer trace.LogIfLong(100 * time.Millisecond)
+	defer trace.LogIfLong(1 * time.Second)
 	if len(candidates) == 0 {
 		return nil, &NoResourceError{
 			sessionID: schedInfo.SessionId,
@@ -182,7 +182,7 @@ func newSchedResultByCtx(u *Unit, count int64, c Candidater) *SchedResultItem {
 		Count:             count,
 		Capacity:          u.GetCapacity(id),
 		Name:              c.Getter().Name(),
-		Score:             u.GetScore(id).String(),
+		Score:             u.GetScore(id),
 		Data:              u.GetFiltedData(id, count),
 		Candidater:        c,
 		AllocatedResource: u.GetAllocatedResource(id),
@@ -244,7 +244,7 @@ type SchedResultItem struct {
 	Count    int64                  `json:"count"`
 	Data     map[string]interface{} `json:"data"`
 	Capacity int64                  `json:"capacity"`
-	Score    string                 `json:"score"`
+	Score    Score                  `json:"score"`
 
 	CapacityDetails map[string]int64 `json:"capacity_details"`
 	ScoreDetails    string           `json:"score_details"`
@@ -450,17 +450,12 @@ func SelectHosts(unit *Unit, priorityList HostPriorityList) ([]*SelectedCandidat
 completed:
 	for len(priorityList) > 0 {
 		log.V(10).Debugf("PriorityList: %#v", priorityList)
-		currentPriority := unit.GetMaxSelectPriority()
 		priorityList0 := HostPriorityList{}
 		for _, it := range priorityList {
 			if count <= 0 {
 				break completed
 			}
 			hostID := it.Host
-			if !currentPriority.IsEmpty() && unit.GetSelectPriority(hostID).Less(currentPriority) {
-				priorityList0 = append(priorityList0, it)
-				continue
-			}
 			var (
 				selectedItem *SelectedCandidate
 				ok           bool
@@ -478,9 +473,6 @@ completed:
 			if unit.GetCapacity(hostID) > selectedItem.Count {
 				priorityList0 = append(priorityList0, it)
 			}
-		}
-		if !currentPriority.IsEmpty() {
-			unit.UpdateSelectPriority()
 		}
 		// sort by score
 		priorityList = priorityList0

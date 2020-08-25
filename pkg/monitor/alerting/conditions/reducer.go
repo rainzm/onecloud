@@ -18,14 +18,28 @@ import (
 	"math"
 	"sort"
 
+	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/utils"
+
+	"yunion.io/x/onecloud/pkg/apis/monitor"
 	"yunion.io/x/onecloud/pkg/monitor/tsdb"
+	"yunion.io/x/onecloud/pkg/monitor/validators"
 )
+
+type Reducer interface {
+	Reduce(series *tsdb.TimeSeries) *float64
+	GetType() string
+}
 
 // queryReducer reduces an timeseries to a float
 type queryReducer struct {
 	// Type is how the timeseries should be reduced.
 	// Ex: avg, sum, max, min, count
 	Type string
+}
+
+func (s *queryReducer) GetType() string {
+	return s.Type
 }
 
 func (s *queryReducer) Reduce(series *tsdb.TimeSeries) *float64 {
@@ -166,4 +180,16 @@ var diff = func(newest, oldest float64) float64 {
 
 var percentDiff = func(newest, oldest float64) float64 {
 	return (newest - oldest) / oldest * 100
+}
+
+func NewAlertReducer(cond *monitor.Condition) (Reducer, error) {
+	if len(cond.Operators) == 0 {
+		return newSimpleReducer(cond.Type), nil
+	}
+
+	if utils.IsInStringArray(cond.Operators[0], validators.CommonAlertReducerFieldOpts) {
+		return newMathReducer(cond)
+	}
+
+	return nil, errors.Wrapf(errors.Error("reducer operator is ilegal"), "operator: %s", cond.Operators[0])
 }

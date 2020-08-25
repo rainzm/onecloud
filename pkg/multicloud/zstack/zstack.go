@@ -59,7 +59,7 @@ type ZstackClientConfig struct {
 
 func NewZstackClientConfig(authURL, username, password string) *ZstackClientConfig {
 	cfg := &ZstackClientConfig{
-		authURL:  authURL,
+		authURL:  strings.TrimSuffix(authURL, "/"),
 		username: username,
 		password: password,
 	}
@@ -430,7 +430,7 @@ func (cli *SZStackClient) wait(header http.Header, action string, requestURL str
 		if err != nil {
 			return nil, errors.Wrap(err, fmt.Sprintf("wait location %s", location))
 		}
-		_, result, err := httputils.ParseJSONResponse(resp, err, cli.debug)
+		_, result, err := httputils.ParseJSONResponse("", resp, err, cli.debug)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				return nil, cloudprovider.ErrNotFound

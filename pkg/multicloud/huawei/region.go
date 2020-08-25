@@ -16,7 +16,6 @@ package huawei
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -517,8 +516,8 @@ func (self *SRegion) GetISecurityGroupById(secgroupId string) (cloudprovider.ICl
 	return self.GetSecurityGroupDetails(secgroupId)
 }
 
-func (self *SRegion) GetISecurityGroupByName(vpcId string, name string) (cloudprovider.ICloudSecurityGroup, error) {
-	secgroups, err := self.GetSecurityGroups(vpcId, name)
+func (self *SRegion) GetISecurityGroupByName(opts *cloudprovider.SecurityGroupFilterOptions) (cloudprovider.ICloudSecurityGroup, error) {
+	secgroups, err := self.GetSecurityGroups(opts.VpcId, opts.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -536,41 +535,21 @@ func (self *SRegion) CreateISecurityGroup(conf *cloudprovider.SecurityGroupCreat
 	return self.CreateSecurityGroup(conf.VpcId, conf.Name, conf.Desc)
 }
 
-func (self *SRegion) SyncSecurityGroup(secgroupId string, vpcId string, name string, desc string, rules []secrules.SecurityRule) (string, error) {
-	if len(secgroupId) > 0 {
-		_, err := self.GetSecurityGroupDetails(secgroupId)
-		if err == cloudprovider.ErrNotFound {
-			secgroupId = ""
-		} else if err != nil {
-			return "", errors.Wrapf(err, "self.GetSecurityGroupDetails(%s)", secgroupId)
-		}
-	}
-
-	if len(secgroupId) == 0 {
-		secgroup, err := self.CreateSecurityGroup(vpcId, name, desc)
-		if err != nil {
-			return "", errors.Wrap(err, "self.CreateSecurityGroup")
-		}
-		secgroupId = secgroup.GetId()
-	}
-
-	// 华为云默认deny。不需要显式指定
-	rules = SecurityRuleSetToAllowSet(rules)
-	return secgroupId, self.syncSecgroupRules(secgroupId, rules)
-}
-
 // https://support.huaweicloud.com/api-vpc/zh-cn_topic_0020090608.html
 func (self *SRegion) CreateIVpc(name string, desc string, cidr string) (cloudprovider.ICloudVpc, error) {
-	params := jsonutils.NewDict()
-	vpcObj := jsonutils.NewDict()
-	vpcObj.Add(jsonutils.NewString(name), "name")
-	vpcObj.Add(jsonutils.NewString(cidr), "cidr")
-	params.Add(vpcObj, "vpc")
+	return self.CreateVpc(name, cidr, desc)
+}
 
-	vpc := SVpc{}
-	err := DoCreate(self.ecsClient.Vpcs.Create, params, &vpc)
-	vpc.region = self
-	return &vpc, err
+func (self *SRegion) CreateVpc(name, cidr, desc string) (*SVpc, error) {
+	params := map[string]interface{}{
+		"vpc": map[string]string{
+			"name":        name,
+			"cidr":        cidr,
+			"description": desc,
+		},
+	}
+	vpc := &SVpc{region: self}
+	return vpc, DoCreate(self.ecsClient.Vpcs.Create, jsonutils.Marshal(params), vpc)
 }
 
 // https://support.huaweicloud.com/api-vpc/zh-cn_topic_0020090596.html
@@ -609,7 +588,7 @@ func (self *SRegion) CreateEIP(eip *cloudprovider.SEip) (cloudprovider.ICloudEIP
 		eip.Name = eip.Name[:64]
 	}
 
-	ieip, err := self.AllocateEIP(eip.Name, eip.BandwidthMbps, ctype, eip.BGPType)
+	ieip, err := self.AllocateEIP(eip.Name, eip.BandwidthMbps, ctype, eip.BGPType, eip.ProjectId)
 	ieip.region = self
 	if err != nil {
 		return nil, err
@@ -734,76 +713,23 @@ func (self *SRegion) CreateSecurityGroup(vpcId string, name string, desc string)
 	return &secgroup, err
 }
 
-func (self *SRegion) syncSecgroupRules(secgroupId string, srules []secrules.SecurityRule) error {
-	var DeleteRules []secrules.SecurityRule
-	var AddRules []secrules.SecurityRule
-
-	rules := SecurityRuleSetToAllowSet(srules)
-	if secgroup, err := self.GetSecurityGroupDetails(secgroupId); err != nil {
-		return errors.Wrapf(err, "syncSecgroupRules.GetSecurityGroupDetails(%s)", secgroupId)
-	} else {
-		remoteRules, err := secgroup.GetRulesWithExtId()
-		if err != nil {
-			return errors.Wrap(err, "secgroup.GetRulesWithExtId")
-		}
-
-		sort.Sort(secrules.SecurityRuleSet(rules))
-		sort.Sort(secrules.SecurityRuleSet(remoteRules))
-
-		i, j := 0, 0
-		for i < len(rules) || j < len(remoteRules) {
-			if i < len(rules) && j < len(remoteRules) {
-				permissionStr := remoteRules[j].String()
-				ruleStr := rules[i].String()
-				cmp := strings.Compare(permissionStr, ruleStr)
-				if cmp == 0 {
-					// DeleteRules = append(DeleteRules, remoteRules[j])
-					// AddRules = append(AddRules, rules[i])
-					i += 1
-					j += 1
-				} else if cmp > 0 {
-					DeleteRules = append(DeleteRules, remoteRules[j])
-					j += 1
-				} else {
-					AddRules = append(AddRules, rules[i])
-					i += 1
-				}
-			} else if i >= len(rules) {
-				DeleteRules = append(DeleteRules, remoteRules[j])
-				j += 1
-			} else if j >= len(remoteRules) {
-				AddRules = append(AddRules, rules[i])
-				i += 1
-			}
-		}
-	}
-
-	for _, r := range DeleteRules {
-		// r.Description 实际存储的是ruleId
-		if err := self.delSecurityGroupRule(r.Description); err != nil {
-			log.Errorf("delSecurityGroupRule %v error: %s", r, err.Error())
-			return err
-		}
-	}
-
-	for _, r := range AddRules {
-		if err := self.addSecurityGroupRules(secgroupId, &r); err != nil {
-			log.Errorf("addSecurityGroupRule %v error: %s", r, err.Error())
-			return err
-		}
-	}
-
-	return nil
-}
-
 // https://support.huaweicloud.com/api-vpc/zh-cn_topic_0087467071.html
 func (self *SRegion) delSecurityGroupRule(secGrpRuleId string) error {
-	return DoDelete(self.ecsClient.SecurityGroupRules.Delete, secGrpRuleId, nil, nil)
+	_, err := self.ecsClient.SecurityGroupRules.DeleteInContextWithSpec(nil, secGrpRuleId, "", nil, nil, "")
+	return err
+}
+
+func (self *SRegion) DeleteSecurityGroupRule(ruleId string) error {
+	return self.delSecurityGroupRule(ruleId)
+}
+
+func (self *SRegion) CreateSecurityGroupRule(secgroupId string, rule cloudprovider.SecurityRule) error {
+	return self.addSecurityGroupRules(secgroupId, rule)
 }
 
 // https://support.huaweicloud.com/api-vpc/zh-cn_topic_0087451723.html
 // icmp port对应关系：https://support.huaweicloud.com/api-vpc/zh-cn_topic_0024109590.html
-func (self *SRegion) addSecurityGroupRules(secGrpId string, rule *secrules.SecurityRule) error {
+func (self *SRegion) addSecurityGroupRules(secGrpId string, rule cloudprovider.SecurityRule) error {
 	direction := ""
 	if rule.Direction == secrules.SecurityRuleIngress {
 		direction = "ingress"

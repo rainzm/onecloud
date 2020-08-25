@@ -38,7 +38,10 @@ build_bin() {
 		climc)
 			GOOS=linux make cmd/$1 cmd/*cli
 			;;
-		vpcagent|host|region-dns)
+		ansibleserver|\
+		host|\
+		region-dns|\
+		vpcagent)
 			docker run --rm \
 				-v $SRC_DIR:/root/go/src/yunion.io/x/onecloud \
 				-v $SRC_DIR/_output/alpine-build:/root/go/src/yunion.io/x/onecloud/_output \
@@ -65,15 +68,27 @@ build_image() {
     local tag=$1
     local file=$2
     local path=$3
-    sudo docker build -t "$tag" -f "$2" "$3"
+    docker build -t "$tag" -f "$2" "$3"
 }
 
 push_image() {
     local tag=$1
-    sudo docker push "$tag"
+    docker push "$tag"
 }
 
-COMPONENTS=$@
+ALL_COMPONENTS=$(ls cmd | grep -v '.*cli$' | xargs)
+
+if [ "$#" -lt 1 ]; then
+    echo "No component is specified~"
+    echo "You can specify a component in [$ALL_COMPONENTS]"
+    echo "If you want to build all components, specify the component to: all."
+    exit
+elif [ "$#" -eq 1 ] && [ "$1" == "all" ]; then
+    echo "Build all onecloud docker images"
+    COMPONENTS=$ALL_COMPONENTS
+else
+    COMPONENTS=$@
+fi
 
 cd $SRC_DIR
 for component in $COMPONENTS; do
@@ -81,6 +96,7 @@ for component in $COMPONENTS; do
         echo "Please build image for climc"
         continue
     fi
+    echo "Start to build component: $component"
     build_bin $component
     build_bundle_libraries $component
     img_name="$REGISTRY/$component:$TAG"

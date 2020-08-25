@@ -62,6 +62,14 @@ func (self *SAzureProviderFactory) IsSupportPrepaidResources() bool {
 	return false
 }
 
+func (self *SAzureProviderFactory) IsSupportCloudIdService() bool {
+	return true
+}
+
+func (self *SAzureProviderFactory) IsSupportCreateCloudgroup() bool {
+	return true
+}
+
 func (self *SAzureProviderFactory) ValidateCreateCloudaccountData(ctx context.Context, userCred mcclient.TokenCredential, input cloudprovider.SCloudaccountCredential) (cloudprovider.SCloudaccount, error) {
 	output := cloudprovider.SCloudaccount{}
 	if len(input.DirectoryId) == 0 {
@@ -169,12 +177,12 @@ func (self *SAzureProvider) GetAccountId() string {
 	return self.client.GetAccountId()
 }
 
-func (self *SAzureProvider) GetIRegions() []cloudprovider.ICloudRegion {
-	return self.client.GetIRegions()
+func (self *SAzureProvider) GetIamLoginUrl() string {
+	return self.client.GetIamLoginUrl()
 }
 
-func (self *SAzureProvider) GetICloudPolicyDefinitions() ([]cloudprovider.ICloudPolicyDefinition, error) {
-	return self.client.GetICloudDefinitions()
+func (self *SAzureProvider) GetIRegions() []cloudprovider.ICloudRegion {
+	return self.client.GetIRegions()
 }
 
 func (self *SAzureProvider) GetIRegionById(id string) (cloudprovider.ICloudRegion, error) {
@@ -189,6 +197,10 @@ func (self *SAzureProvider) GetIProjects() ([]cloudprovider.ICloudProject, error
 	return self.client.GetIProjects()
 }
 
+func (self *SAzureProvider) CreateIProject(name string) (cloudprovider.ICloudProject, error) {
+	return self.client.CreateIProject(name)
+}
+
 func (self *SAzureProvider) GetStorageClasses(regionId string) []string {
 	sc, err := self.client.GetStorageClasses(regionId)
 	if err != nil {
@@ -198,10 +210,64 @@ func (self *SAzureProvider) GetStorageClasses(regionId string) []string {
 	return sc
 }
 
+func (self *SAzureProvider) GetBucketCannedAcls(regionId string) []string {
+	return []string{
+		string(cloudprovider.ACLPrivate),
+		string(cloudprovider.ACLPublicRead),
+	}
+}
+
+func (self *SAzureProvider) GetObjectCannedAcls(regionId string) []string {
+	return []string{
+		string(cloudprovider.ACLPrivate),
+		string(cloudprovider.ACLPublicRead),
+	}
+}
+
 func (self *SAzureProvider) GetCloudRegionExternalIdPrefix() string {
 	return self.client.GetAccessEnv() + "/"
 }
 
 func (self *SAzureProvider) GetCapabilities() []string {
 	return self.client.GetCapabilities()
+}
+
+func (self *SAzureProvider) CreateIClouduser(conf *cloudprovider.SClouduserCreateConfig) (cloudprovider.IClouduser, error) {
+	return self.client.CreateIClouduser(conf)
+}
+
+func (self *SAzureProvider) GetICloudusers() ([]cloudprovider.IClouduser, error) {
+	return self.client.GetICloudusers()
+}
+
+func (self *SAzureProvider) GetIClouduserByName(name string) (cloudprovider.IClouduser, error) {
+	return self.client.GetIClouduserByName(name)
+}
+
+func (self *SAzureProvider) GetICloudgroups() ([]cloudprovider.ICloudgroup, error) {
+	return self.client.GetICloudgroups()
+}
+
+func (self *SAzureProvider) CreateICloudgroup(name, desc string) (cloudprovider.ICloudgroup, error) {
+	return self.client.CreateICloudgroup(name, desc)
+}
+
+func (self *SAzureProvider) GetICloudgroupByName(name string) (cloudprovider.ICloudgroup, error) {
+	return self.client.GetICloudgroupByName(name)
+}
+
+func (self *SAzureProvider) GetEnrollmentAccounts() ([]cloudprovider.SEnrollmentAccount, error) {
+	return self.client.GetEnrollmentAccounts()
+}
+
+func (self *SAzureProvider) GetISystemCloudpolicies() ([]cloudprovider.ICloudpolicy, error) {
+	return self.client.GetISystemCloudpolicies()
+}
+
+func (self *SAzureProvider) GetICustomCloudpolicies() ([]cloudprovider.ICloudpolicy, error) {
+	return self.client.GetICustomCloudpolicies()
+}
+
+func (self *SAzureProvider) CreateSubscription(input cloudprovider.SubscriptionCreateInput) error {
+	return self.client.CreateSubscription(input.Name, input.EnrollmentAccountId, input.OfferType)
 }

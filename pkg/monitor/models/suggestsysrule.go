@@ -17,6 +17,7 @@ package models
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"yunion.io/x/jsonutils"
@@ -39,7 +40,7 @@ var (
 
 func init() {
 	SuggestSysRuleManager = &SSuggestSysRuleManager{
-		SVirtualResourceBaseManager: db.NewVirtualResourceBaseManager(
+		SStandaloneResourceBaseManager: db.NewStandaloneResourceBaseManager(
 			&SSuggestSysRule{},
 			"suggestsysrule_tbl",
 			"suggestsysrule",
@@ -49,24 +50,30 @@ func init() {
 	SuggestSysRuleManager.SetVirtualObject(SuggestSysRuleManager)
 }
 
+// +onecloud:swagger-gen-model-singular=suggestsysrule
+// +onecloud:swagger-gen-model-plural=suggestsysrules
 type SSuggestSysRuleManager struct {
-	db.SVirtualResourceBaseManager
+	db.SStandaloneResourceBaseManager
 	db.SEnabledResourceBaseManager
 }
 
 type SSuggestSysRule struct {
-	db.SVirtualResourceBase
+	db.SStandaloneResourceBase
 	db.SEnabledResourceBase
 
 	Type     string               `width:"256" charset:"ascii" list:"user" update:"user"`
 	Period   string               `width:"256" charset:"ascii" list:"user" update:"user"`
 	TimeFrom string               `width:"256" charset:"ascii" list:"user" update:"user"`
+<<<<<<< HEAD
 	Setting  jsonutils.JSONObject ` list:"user" update:"user"`
+=======
+	Setting  jsonutils.JSONObject `list:"user" update:"user"`
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	ExecTime time.Time            `list:"user" update:"user"`
 }
 
-func (man *SSuggestSysRuleManager) FetchSuggestSysAlartSettings(ruleTypes ...string) (map[string]*monitor.SuggestSysRuleDetails, error) {
-	suggestSysAlerSettingMap := make(map[string]*monitor.SuggestSysRuleDetails, 0)
+func (man *SSuggestSysRuleManager) FetchSuggestSysAlertSettings(ruleTypes ...monitor.SuggestDriverType) (map[monitor.SuggestDriverType]*monitor.SuggestSysRuleDetails, error) {
+	suggestSysAlerSettingMap := make(map[monitor.SuggestDriverType]*monitor.SuggestSysRuleDetails, 0)
 
 	rules, err := man.GetRules(ruleTypes...)
 	if err != nil {
@@ -77,15 +84,19 @@ func (man *SSuggestSysRuleManager) FetchSuggestSysAlartSettings(ruleTypes ...str
 		if err != nil {
 			return suggestSysAlerSettingMap, errors.Wrap(err, "FetchSuggestSysAlartSettings")
 		}
-		suggestSysAlerSettingMap[config.Type] = &suggestSysRuleDetails
+		suggestSysAlerSettingMap[config.GetType()] = &suggestSysRuleDetails
 	}
 	return suggestSysAlerSettingMap, nil
 }
 
+func (rule *SSuggestSysRule) GetType() monitor.SuggestDriverType {
+	return monitor.SuggestDriverType(rule.Type)
+}
+
 //根据数据库中查询得到的信息进行适配转换，同时更新drivers中的内容
-func (dConfig *SSuggestSysRule) getSuggestSysAlertSetting() (*monitor.SSuggestSysAlertSetting, error) {
+func (rule *SSuggestSysRule) getSuggestSysAlertSetting() (*monitor.SSuggestSysAlertSetting, error) {
 	setting := new(monitor.SSuggestSysAlertSetting)
-	err := dConfig.Setting.Unmarshal(setting)
+	err := rule.Setting.Unmarshal(setting)
 	if err != nil {
 		return nil, errors.Wrap(err, "SSuggestSysRule getSuggestSysAlertSetting error")
 	}
@@ -102,9 +113,9 @@ func (manager *SSuggestSysRuleManager) ListItemFilter(
 	userCred mcclient.TokenCredential,
 	query monitor.SuggestSysRuleListInput) (*sqlchemy.SQuery, error) {
 	var err error
-	q, err = manager.SVirtualResourceBaseManager.ListItemFilter(ctx, q, userCred, query.VirtualResourceListInput)
+	q, err = manager.SStandaloneResourceBaseManager.ListItemFilter(ctx, q, userCred, query.StandaloneResourceListInput)
 	if err != nil {
-		return nil, errors.Wrap(err, "SVirtualResourceBaseManager.ListItemFilter")
+		return nil, errors.Wrap(err, "SStandaloneResourceBaseManager.ListItemFilter")
 	}
 	q, err = manager.SEnabledResourceBaseManager.ListItemFilter(ctx, q, userCred, query.EnabledResourceBaseListInput)
 	if err != nil {
@@ -134,27 +145,38 @@ func (man *SSuggestSysRuleManager) ValidateCreateData(
 	if _, err := time.ParseDuration(data.TimeFrom); err != nil {
 		return data, httperrors.NewInputParameterError("Invalid period format: %s", data.TimeFrom)
 	}
-	if dri, ok := suggestSysRuleDrivers[data.Type]; !ok {
+	if dri, ok := suggestSysRuleDrivers[monitor.SuggestDriverType(data.Type)]; !ok {
 		return data, httperrors.NewInputParameterError("not support type %q", data.Type)
 	} else {
-		//Type is uniq
-		err := db.NewNameValidator(man, ownerId, data.Type, "")
-		if err != nil {
+		// Type is uniq
+		if err := db.NewNameValidator(man, ownerId, data.Type, ""); err != nil {
 			return data, err
 		}
-		if data.Type == monitor.SCALE_DOWN || data.Type == monitor.SCALE_UP {
+		if rule, err := man.GetRuleByType(monitor.SuggestDriverType(data.Type)); err != nil {
+			if errors.Cause(err) != sql.ErrNoRows {
+				return data, err
+			}
+		} else if rule != nil {
+			return data, httperrors.NewDuplicateResourceError("type %s rule already exists")
+		}
+
+		drvType := monitor.SuggestDriverType(data.Type)
+		if drvType == monitor.SCALE_DOWN || drvType == monitor.SCALE_UP {
 			if data.Setting == nil {
 				return data, httperrors.NewInputParameterError("no found rule setting")
 			}
 		}
 		if data.Setting != nil {
-			err = dri.ValidateSetting(data.Setting)
-			if err != nil {
+			if err := dri.ValidateSetting(data.Setting); err != nil {
 				return data, errors.Wrap(err, "validate setting error")
 			}
 		}
 	}
 	return data, nil
+}
+
+func (rule *SSuggestSysRule) GetDriver() ISuggestSysRuleDriver {
+	return GetSuggestSysRuleDrivers()[rule.GetType()]
 }
 
 func (rule *SSuggestSysRule) ValidateUpdateData(
@@ -172,7 +194,7 @@ func (rule *SSuggestSysRule) ValidateUpdateData(
 		return data, httperrors.NewInputParameterError("Invalid period format: %s", data.Period)
 	}
 	if data.Setting != nil {
-		err := suggestSysRuleDrivers[rule.Type].ValidateSetting(data.Setting)
+		err := rule.GetDriver().ValidateSetting(data.Setting)
 		if err != nil {
 			return data, errors.Wrap(err, "validate setting error")
 		}
@@ -189,10 +211,10 @@ func (man *SSuggestSysRuleManager) FetchCustomizeColumns(
 	isList bool,
 ) []monitor.SuggestSysRuleDetails {
 	rows := make([]monitor.SuggestSysRuleDetails, len(objs))
-	virtRows := man.SVirtualResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
+	virtRows := man.SStandaloneResourceBaseManager.FetchCustomizeColumns(ctx, userCred, query, objs, fields, isList)
 	for i := range rows {
 		rows[i] = monitor.SuggestSysRuleDetails{
-			VirtualResourceDetails: virtRows[i],
+			StandaloneResourceDetails: virtRows[i],
 		}
 		rows[i] = objs[i].(*SSuggestSysRule).getMoreDetails(rows[i])
 	}
@@ -220,13 +242,13 @@ func (self *SSuggestSysRule) GetExtraDetails(
 	return monitor.SuggestSysRuleDetails{}, nil
 }
 
-//after create, update Cronjob's info
+// after create, update Cronjob's info
 func (self *SSuggestSysRule) PostCreate(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
-	self.SVirtualResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
+	self.SStandaloneResourceBase.PostCreate(ctx, userCred, ownerId, query, data)
 	self.updateCronjob()
 }
 
-//after update, update Cronjob's info
+// after update, update Cronjob's info
 func (self *SSuggestSysRule) PostUpdate(
 	ctx context.Context, userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject, data jsonutils.JSONObject) {
@@ -238,7 +260,7 @@ func (self *SSuggestSysRule) updateCronjob() {
 	if self.Enabled.Bool() {
 		dur, _ := time.ParseDuration(self.Period)
 		cronman.GetCronJobManager().AddJobAtIntervalsWithStartRun(self.Type, dur,
-			suggestSysRuleDrivers[self.Type].DoSuggestSysRule, true)
+			self.GetDriver().DoSuggestSysRule, true)
 	}
 }
 
@@ -287,8 +309,22 @@ func (self *SSuggestSysRuleManager) GetPropertyRuleType(ctx context.Context, use
 	if err != nil {
 		return ret, err
 	}
+	drivers := GetSuggestSysRuleDrivers()
+	dbTypes := make(map[monitor.SuggestDriverType]string, 0)
 	for _, rule := range rules {
-		ruleArr.Add(jsonutils.NewString(rule.Type))
+		if _, ok := drivers[rule.GetType()]; !ok {
+			return nil, fmt.Errorf("have invalid rule type :%s", string(rule.GetType()))
+		}
+		dbTypes[rule.GetType()] = ""
+	}
+	if len(dbTypes) == len(drivers) {
+		return ret, nil
+	}
+	for typ, driver := range drivers {
+		if _, ok := dbTypes[typ]; ok {
+			continue
+		}
+		ruleArr.Add(jsonutils.NewString(string(driver.GetType())))
 	}
 	return ret, nil
 }
@@ -309,7 +345,19 @@ func (self *SSuggestSysRuleManager) AllowGetPropertyMeasurements(ctx context.Con
 
 func (self *SSuggestSysRuleManager) GetPropertyMeasurements(ctx context.Context, userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
-	return DataSourceManager.GetMeasurements(query)
+	ruleType, err := query.GetString("type")
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := monitor.FilterSuggestRuleMeasureMentMap[monitor.SuggestDriverType(ruleType)]; !ok {
+		return nil, fmt.Errorf("param type: %s is invalid", ruleType)
+	}
+	measurementFilter := getMeasurementFilter(monitor.FilterSuggestRuleMeasureMentMap[monitor.SuggestDriverType(ruleType)])
+	return DataSourceManager.GetMeasurements(query, measurementFilter, "")
+}
+
+func getMeasurementFilter(filter string) string {
+	return fmt.Sprintf(" MEASUREMENT =~ /%s.*/", filter)
 }
 
 func (self *SSuggestSysRuleManager) AllowGetPropertyMetricMeasurement(ctx context.Context,
@@ -323,7 +371,22 @@ func (self *SSuggestSysRuleManager) GetPropertyMetricMeasurement(ctx context.Con
 	return DataSourceManager.GetMetricMeasurement(query)
 }
 
-func (self *SSuggestSysRuleManager) GetRules(tp ...string) ([]SSuggestSysRule, error) {
+func (man *SSuggestSysRuleManager) GetRuleByType(tp monitor.SuggestDriverType) (*SSuggestSysRule, error) {
+	query := man.Query().Equals("type", tp)
+	rules := make([]SSuggestSysRule, 0)
+	if err := db.FetchModelObjects(man, query, &rules); err != nil {
+		return nil, err
+	}
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	if len(rules) != 1 {
+		return nil, errors.Wrapf(sqlchemy.ErrDuplicateEntry, "found %d type %s rules", len(rules), tp)
+	}
+	return &rules[0], nil
+}
+
+func (self *SSuggestSysRuleManager) GetRules(tp ...monitor.SuggestDriverType) ([]SSuggestSysRule, error) {
 	rules := make([]SSuggestSysRule, 0)
 	query := self.Query()
 	if len(tp) > 0 {
@@ -331,8 +394,7 @@ func (self *SSuggestSysRuleManager) GetRules(tp ...string) ([]SSuggestSysRule, e
 	}
 	err := db.FetchModelObjects(self, query, &rules)
 	if err != nil && err != sql.ErrNoRows {
-		log.Errorln(errors.Wrap(err, "db.FetchModelObjects"))
-		return rules, err
+		return rules, errors.Wrap(err, "db.FetchModelObjects")
 	}
 	return rules, nil
 }

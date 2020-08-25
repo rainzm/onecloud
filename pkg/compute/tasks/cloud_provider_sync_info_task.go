@@ -58,11 +58,6 @@ func getAction(params *jsonutils.JSONDict) string {
 	return action
 }
 
-func taskFail(ctx context.Context, task *CloudProviderSyncInfoTask, provider *models.SCloudprovider, reason string) {
-	logclient.AddActionLogWithStartable(task, provider, getAction(task.Params), reason, task.UserCred, false)
-	task.SetStageFailed(ctx, reason)
-}
-
 func (self *CloudProviderSyncInfoTask) GetSyncRange() models.SSyncRange {
 	syncRange := models.SSyncRange{}
 	syncRangeJson, _ := self.Params.Get("sync_range")
@@ -88,14 +83,6 @@ func (self *CloudProviderSyncInfoTask) OnInit(ctx context.Context, obj db.IStand
 			result := models.CloudproviderQuotaManager.SyncQuotas(ctx, self.GetUserCred(), provider.GetOwnerId(), provider, nil, api.CLOUD_PROVIDER_QUOTA_RANGE_CLOUDPROVIDER, quotas)
 			msg := result.Result()
 			notes := fmt.Sprintf("SyncQuotas for provider %s result: %s", provider.Name, msg)
-			log.Infof(notes)
-		}
-
-		policyDefinitions, err := p.GetICloudPolicyDefinitions()
-		if err == nil {
-			result := models.PolicyDefinitionManager.SyncPolicyDefinitions(ctx, self.GetUserCred(), provider.GetOwnerId(), provider, policyDefinitions)
-			msg := result.Result()
-			notes := fmt.Sprintf("SyncPolicyDefinitions for provider %s result: %s", provider.Name, msg)
 			log.Infof(notes)
 		}
 		return nil, nil

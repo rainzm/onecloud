@@ -20,11 +20,11 @@ import (
 
 type WireResourceInput struct {
 	// 二层网络(ID或Name)的资源
-	Wire string `json:"wire"`
+	WireId string `json:"wire_id"`
 	// swagger:ignore
 	// Deprecated
 	// fitler by wire id
-	WireId string `json:"wire_id" "yunion:deprecated-by":"wire"`
+	Wire string `json:"wire" yunion-deprecated-by:"wire_id"`
 }
 
 type WireFilterListBase struct {
@@ -43,11 +43,11 @@ type WireFilterListInput struct {
 
 type NetworkResourceInput struct {
 	// IP子网（ID或Name）
-	Network string `json:"network"`
+	NetworkId string `json:"network_id"`
 	// swagger:ignore
 	// Deprecated
 	// filter by networkId
-	NetworkId string `json:"network_id" "yunion:deprecated-by":"network"`
+	Network string `json:"network" yunion-deprecated-by:"network_id"`
 }
 
 type NetworkFilterListBase struct {
@@ -65,15 +65,20 @@ type NetworkFilterListInput struct {
 type NetworkListInput struct {
 	apis.SharableVirtualResourceListInput
 	apis.ExternalizedResourceBaseListInput
+	SchedtagResourceInput
 	WireFilterListInput
 
 	HostResourceInput
 
 	UsableResourceListInput
 
-	// description: search ip address in network.
+	// description: Exact matching ip address in network.
 	// example: 10.168.222.1
 	Ip string `json:"ip"`
+
+	// description: Fuzzy matching ip address in network.
+	// example: 10.168.222.1
+	IpMatch string `json:"ip_match"`
 
 	IfnameHint []string `json:"ifname_hint"`
 	// 起始IP地址
@@ -105,6 +110,10 @@ type NetworkListInput struct {
 	ServerType []string `json:"server_type"`
 	// 分配策略
 	AllocPolicy []string `json:"alloc_policy"`
+	// 是否加入自动分配地址池
+	IsAutoAlloc *bool `json:"is_auto_alloc"`
+	// 是否为基础网络（underlay）
+	IsClassic *bool `json:"is_classic"`
 }
 
 type NetworkResourceInfoBase struct {
@@ -172,6 +181,9 @@ type NetworkCreateInput struct {
 	// enum: guest,baremetal,pxe,ipmi
 	// default: guest
 	ServerType string `json:"server_type"`
+
+	// 是否加入自动分配地址池
+	IsAutoAlloc *bool `json:"is_auto_alloc"`
 }
 
 type NetworkDetails struct {
@@ -294,4 +306,7 @@ type NetworkUpdateInput struct {
 
 	// 分配策略
 	AllocPolicy string `json:"alloc_policy"`
+
+	// 是否加入自动分配地址池
+	IsAutoAlloc *bool `json:"is_auto_alloc"`
 }

@@ -363,12 +363,12 @@ func (self *SServerSkuManager) ValidateCreateData(ctx context.Context, userCred 
 		// 格式 ecs.g1.c1m1
 		input.Name, err = genInstanceType(input.InstanceTypeFamily, input.CpuCoreCount, input.MemorySizeMB)
 		if err != nil {
-			return nil, httperrors.NewInputParameterError(err.Error())
+			return nil, httperrors.NewInputParameterError("%v", err)
 		}
 		q := self.Query().Equals("name", input.Name)
 		count, err := q.CountWithError()
 		if err != nil {
-			return nil, httperrors.NewGeneralError(fmt.Errorf("checkout server sku name duplicate error: %v", err))
+			return nil, httperrors.NewInternalServerError("checkout server sku name duplicate error: %v", err)
 		}
 		if count > 0 {
 			return nil, httperrors.NewDuplicateResourceError("Duplicate sku %s", input.Name)
@@ -759,7 +759,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 		)
 	}
 
-	if domainStr := query.ProjectDomain; len(domainStr) > 0 {
+	if domainStr := query.ProjectDomainId; len(domainStr) > 0 {
 		domain, err := db.TenantCacheManager.FetchDomainByIdOrName(context.Background(), domainStr)
 		if err != nil {
 			if errors.Cause(err) == sql.ErrNoRows {
@@ -767,9 +767,9 @@ func (manager *SServerSkuManager) ListItemFilter(
 			}
 			return nil, httperrors.NewGeneralError(err)
 		}
-		query.ProjectDomain = domain.GetId()
+		query.ProjectDomainId = domain.GetId()
 	}
-	q = listItemDomainFilter(q, query.Providers, query.ProjectDomain)
+	q = listItemDomainFilter(q, query.Providers, query.ProjectDomainId)
 
 	providers := query.Providers
 	if len(providers) > 0 {
@@ -794,7 +794,7 @@ func (manager *SServerSkuManager) ListItemFilter(
 		q = q.IsTrue("enabled")
 	}
 
-	zoneStr := query.Zone
+	zoneStr := query.ZoneId
 	if len(zoneStr) > 0 {
 		_zone, err := ZoneManager.FetchByIdOrName(userCred, zoneStr)
 		if err != nil {
@@ -819,6 +819,13 @@ func (manager *SServerSkuManager) ListItemFilter(
 	q, err = managedResourceFilterByRegion(q, query.RegionalFilterListInput, "", nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "managedResourceFilterByRegion")
+	}
+
+	if len(query.PostpaidStatus) > 0 {
+		q = q.Equals("postpaid_status", query.PostpaidStatus)
+	}
+	if len(query.PrepaidStatus) > 0 {
+		q = q.Equals("prepaid_status", query.PrepaidStatus)
 	}
 
 	// 按区间查询内存, 避免0.75G这样的套餐不好过滤
@@ -1135,10 +1142,15 @@ func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred 
 	sku.Status = api.SkuStatusReady
 	sku.constructSku(extSku)
 
-	sku.Name = extSku.GetName()
+	var err error
+	sku.Name, err = db.GenerateName(manager, userCred, extSku.GetName())
+	if err != nil {
+		return errors.Wrap(err, "db.GenerateName")
+	}
+
 	sku.CloudregionId = api.DEFAULT_REGION_ID
 	sku.SetModelManager(manager, sku)
-	err := manager.TableSpec().Insert(sku)
+	err = manager.TableSpec().Insert(ctx, sku)
 	if err != nil {
 		return errors.Wrapf(err, "newFromCloudSku.Insert")
 	}
@@ -1150,7 +1162,7 @@ func (manager *SServerSkuManager) newFromCloudSku(ctx context.Context, userCred 
 func (manager *SServerSkuManager) newPublicCloudSku(ctx context.Context, userCred mcclient.TokenCredential, extSku SServerSku) error {
 	extSku.Enabled = true
 	extSku.Status = api.SkuStatusReady
-	return manager.TableSpec().Insert(&extSku)
+	return manager.TableSpec().Insert(ctx, &extSku)
 }
 
 func (self *SServerSku) AllowPerformEnable(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
@@ -1196,6 +1208,8 @@ func (self *SServerSku) syncWithCloudSku(ctx context.Context, userCred mcclient.
 		self.ZoneId = extSku.ZoneId
 		self.PrepaidStatus = extSku.PrepaidStatus
 		self.PostpaidStatus = extSku.PostpaidStatus
+		self.SysDiskType = extSku.SysDiskType
+		self.DataDiskTypes = extSku.DataDiskTypes
 		return nil
 	})
 	return err
@@ -1230,7 +1244,7 @@ func (manager *SServerSkuManager) SyncServerSkus(ctx context.Context, userCred m
 
 	syncResult := compare.SyncResult{}
 
-	extSkus, err := extSkuMeta.GetServerSkus(region)
+	extSkus, err := extSkuMeta.GetServerSkusByRegionExternalId(region.ExternalId)
 	if err != nil {
 		syncResult.Error(err)
 		return syncResult
@@ -1281,7 +1295,7 @@ func (manager *SServerSkuManager) SyncServerSkus(ctx context.Context, userCred m
 }
 
 // sku标记为soldout状态。
-func (manager *SServerSkuManager) MarkAsSoldout(id string) error {
+func (manager *SServerSkuManager) MarkAsSoldout(ctx context.Context, id string) error {
 	if len(id) == 0 {
 		log.Debugf("MarkAsSoldout sku id should not be emtpy")
 		return nil
@@ -1297,7 +1311,7 @@ func (manager *SServerSkuManager) MarkAsSoldout(id string) error {
 		return fmt.Errorf("%s is not a sku object", id)
 	}
 
-	_, err = manager.TableSpec().Update(sku, func() error {
+	_, err = manager.TableSpec().Update(ctx, sku, func() error {
 		sku.PrepaidStatus = api.SkuStatusSoldout
 		sku.PostpaidStatus = api.SkuStatusSoldout
 		return nil
@@ -1311,10 +1325,10 @@ func (manager *SServerSkuManager) MarkAsSoldout(id string) error {
 }
 
 // sku标记为soldout状态。
-func (manager *SServerSkuManager) MarkAllAsSoldout(ids []string) error {
+func (manager *SServerSkuManager) MarkAllAsSoldout(ctx context.Context, ids []string) error {
 	var err error
 	for _, id := range ids {
-		err = manager.MarkAsSoldout(id)
+		err = manager.MarkAsSoldout(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -1480,7 +1494,7 @@ func (manager *SServerSkuManager) InitializeData() error {
 				sku.Name = name
 				sku.PrepaidStatus = api.SkuStatusAvailable
 				sku.PostpaidStatus = api.SkuStatusAvailable
-				err := manager.TableSpec().Insert(sku)
+				err := manager.TableSpec().Insert(context.TODO(), sku)
 				if err != nil {
 					log.Errorf("ServerSkuManager Initialize local sku %s", err)
 				}
@@ -1497,7 +1511,7 @@ func (manager *SServerSkuManager) InitializeData() error {
 	}
 
 	for _, sku := range privateSkus {
-		_, err = manager.TableSpec().Update(&sku, func() error {
+		_, err = manager.TableSpec().Update(context.TODO(), &sku, func() error {
 			sku.LocalCategory = sku.InstanceTypeCategory
 			return nil
 		})

@@ -74,14 +74,27 @@ type SCloudprovider struct {
 
 func (manager *SCloudproviderManager) GetRegionCloudproviders(ctx context.Context, userCred mcclient.TokenCredential) ([]SCloudprovider, error) {
 	s := session.GetSession(ctx, userCred)
+
+	data := []jsonutils.JSONObject{}
+	offset := int64(0)
 	params := jsonutils.NewDict()
-	result, err := modules.Cloudproviders.List(s, params)
-	if err != nil {
-		return nil, errors.Wrap(err, "modules.Cloudproviders.List")
+	params.Set("scope", jsonutils.NewString("system"))
+	params.Set("limit", jsonutils.NewInt(1024))
+	for {
+		params.Set("offset", jsonutils.NewInt(offset))
+		result, err := modules.Cloudproviders.List(s, params)
+		if err != nil {
+			return nil, errors.Wrap(err, "modules.Cloudproviders.List")
+		}
+		data = append(data, result.Data...)
+		if len(data) >= result.Total {
+			break
+		}
+		offset += 1024
 	}
 
 	providers := []SCloudprovider{}
-	err = jsonutils.Update(&providers, result.Data)
+	err := jsonutils.Update(&providers, data)
 	if err != nil {
 		return nil, errors.Wrap(err, "jsonutils.Update")
 	}
@@ -206,7 +219,7 @@ func (self *SCloudprovider) SetLastSyncTimeAt(userCred mcclient.TokenCredential,
 
 func (manager *SCloudproviderManager) newFromRegionProvider(ctx context.Context, userCred mcclient.TokenCredential, cloudprovider SCloudprovider) error {
 	cloudprovider.SyncStatus = api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
-	return manager.TableSpec().Insert(&cloudprovider)
+	return manager.TableSpec().Insert(ctx, &cloudprovider)
 }
 
 func (manager *SCloudproviderManager) syncCloudeventTask(ctx context.Context, userCred mcclient.TokenCredential) error {

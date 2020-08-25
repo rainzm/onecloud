@@ -22,6 +22,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/secrules"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
@@ -43,6 +44,26 @@ type SQcloudRegionDriver struct {
 func init() {
 	driver := SQcloudRegionDriver{}
 	models.RegisterRegionDriver(&driver)
+}
+
+func (self *SQcloudRegionDriver) GetSecurityGroupRuleOrder() cloudprovider.TPriorityOrder {
+	return cloudprovider.PriorityOrderByAsc
+}
+
+func (self *SQcloudRegionDriver) GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("in:deny any")}
+}
+
+func (self *SQcloudRegionDriver) GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("out:deny any")}
+}
+
+func (self *SQcloudRegionDriver) GetSecurityGroupRuleMaxPriority() int {
+	return 0
+}
+
+func (self *SQcloudRegionDriver) GetSecurityGroupRuleMinPriority() int {
+	return 100
 }
 
 func (self *SQcloudRegionDriver) GetProvider() string {
@@ -283,7 +304,7 @@ func (self *SQcloudRegionDriver) RequestCreateLoadbalancerBackend(ctx context.Co
 		for _, cachedLbbg := range cachedlbbgs {
 			iLoadbalancerBackendGroup, err := cachedLbbg.GetICloudLoadbalancerBackendGroup()
 			if err != nil {
-				if err == cloudprovider.ErrNotFound {
+				if errors.Cause(err) == cloudprovider.ErrNotFound {
 					continue
 				}
 
@@ -302,7 +323,7 @@ func (self *SQcloudRegionDriver) RequestCreateLoadbalancerBackend(ctx context.Co
 		}
 
 		if ibackend != nil {
-			if err := lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, ibackend, nil, lb.GetCloudprovider()); err != nil {
+			if err := lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, ibackend, lbbg.GetOwnerId(), lb.GetCloudprovider()); err != nil {
 				return nil, errors.Wrap(err, "qcloudRegionDriver.RequestCreateLoadbalancerBackend.SyncWithCloudLoadbalancerBackend")
 			}
 		}
@@ -366,7 +387,7 @@ func (self *SQcloudRegionDriver) RequestDeleteLoadbalancerBackend(ctx context.Co
 	return nil
 }
 
-func (self *SQcloudRegionDriver) createCachedLbbg(lb *models.SLoadbalancer, lblis *models.SLoadbalancerListener, lbr *models.SLoadbalancerListenerRule, lbbg *models.SLoadbalancerBackendGroup) (*models.SQcloudCachedLbbg, error) {
+func (self *SQcloudRegionDriver) createCachedLbbg(ctx context.Context, lb *models.SLoadbalancer, lblis *models.SLoadbalancerListener, lbr *models.SLoadbalancerListenerRule, lbbg *models.SLoadbalancerBackendGroup) (*models.SQcloudCachedLbbg, error) {
 	// create loadbalancer backendgroup cache
 	cachedLbbg := &models.SQcloudCachedLbbg{}
 	cachedLbbg.ManagerId = lb.GetCloudproviderId()
@@ -381,7 +402,7 @@ func (self *SQcloudRegionDriver) createCachedLbbg(lb *models.SLoadbalancer, lbli
 		cachedLbbg.AssociatedId = lblis.GetId()
 	}
 
-	err := models.QcloudCachedLbbgManager.TableSpec().Insert(cachedLbbg)
+	err := models.QcloudCachedLbbgManager.TableSpec().Insert(ctx, cachedLbbg)
 	if err != nil {
 		return nil, errors.Wrap(err, "SQcloudRegionDriver.createCachedLbbg.Insert")
 	}
@@ -486,7 +507,7 @@ func (self *SQcloudRegionDriver) createLoadbalancerBackendGroup(ctx context.Cont
 		return nil, fmt.Errorf("could not create loadbalancer backendgroup, loadbalancer listener & rule are nil")
 	}
 
-	cachedLbbg, err := self.createCachedLbbg(lb, lblis, lbr, lbbg)
+	cachedLbbg, err := self.createCachedLbbg(ctx, lb, lblis, lbr, lbbg)
 	if err != nil {
 		return nil, errors.Wrap(err, "QcloudRegionDriver.createLoadbalancerBackendGroupCache")
 	}
@@ -589,7 +610,7 @@ func (self *SQcloudRegionDriver) RequestCreateLoadbalancerListener(ctx context.C
 			}
 		}
 
-		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, nil, loadbalancer.GetCloudprovider())
+		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, loadbalancer.GetOwnerId(), loadbalancer.GetCloudprovider())
 	})
 	return nil
 }
@@ -683,7 +704,7 @@ func (self *SQcloudRegionDriver) RequestCreateLoadbalancerListenerRule(ctx conte
 			return nil, errors.Wrap(err, "SQcloudRegionDriver.RequestCreateLoadbalancerListener.createLoadbalancerBackendGroup")
 		}
 
-		return nil, lbr.SyncWithCloudLoadbalancerListenerRule(ctx, userCred, iListenerRule, nil, loadbalancer.GetCloudprovider())
+		return nil, lbr.SyncWithCloudLoadbalancerListenerRule(ctx, userCred, iListenerRule, listener.GetOwnerId(), loadbalancer.GetCloudprovider())
 	})
 	return nil
 }
@@ -1103,7 +1124,7 @@ func (self *SQcloudRegionDriver) RequestSyncLoadbalancerBackend(ctx context.Cont
 				return nil, errors.Wrap(err, "qcloudRegionDriver.RequestSyncLoadbalancerBackend.Refresh")
 			}
 
-			err = cachedlbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, iBackend, nil)
+			err = cachedlbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, iBackend, lbb.GetOwnerId())
 			if err != nil {
 				return nil, errors.Wrap(err, "qcloudRegionDriver.RequestSyncLoadbalancerBackend.SyncWithCloudLoadbalancerBackend")
 			}
@@ -1329,7 +1350,7 @@ func (self *SQcloudRegionDriver) RequestSyncLoadbalancerListener(ctx context.Con
 		}
 
 		if utils.IsInStringArray(lblis.ListenerType, []string{api.LB_LISTENER_TYPE_UDP, api.LB_LISTENER_TYPE_TCP}) {
-			return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, nil, loadbalancer.GetCloudprovider())
+			return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, loadbalancer.GetOwnerId(), loadbalancer.GetCloudprovider())
 		} else {
 			// http&https listener 变更不会同步到监听规则
 			return nil, nil

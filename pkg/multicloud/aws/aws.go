@@ -15,11 +15,20 @@
 package aws
 
 import (
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
 	sdk "github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/client"
+	"github.com/aws/aws-sdk-go/aws/client/metadata"
+	"github.com/aws/aws-sdk-go/aws/corehandlers"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
+	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/aws/aws-sdk-go/private/protocol/query"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -41,6 +50,9 @@ const (
 	AWS_INTERNATIONAL_DEFAULT_REGION = "us-west-1"
 	AWS_CHINA_DEFAULT_REGION         = "cn-north-1"
 	AWS_API_VERSION                  = "2018-10-10"
+
+	AWS_GLOBAL_ARN_PREFIX = "arn:aws:iam::aws:policy/"
+	AWS_CHINA_ARN_PREFIX  = "arn:aws-cn:iam::aws:policy/"
 )
 
 var (
@@ -73,6 +85,7 @@ func (cfg *AwsClientConfig) CloudproviderConfig(cpcfg cloudprovider.ProviderConf
 
 func (cfg *AwsClientConfig) Debug(debug bool) *AwsClientConfig {
 	cfg.debug = debug
+	DEBUG = debug
 	return cfg
 }
 
@@ -102,6 +115,24 @@ func NewAwsClient(cfg *AwsClientConfig) (*SAwsClient, error) {
 		log.Debugf("ownerId: %s ownerName: %s", client.ownerId, client.ownerName)
 	}
 	return &client, nil
+}
+
+func (cli *SAwsClient) getIamArn(arn string) string {
+	switch cli.GetAccessEnv() {
+	case api.CLOUD_ACCESS_ENV_AWS_GLOBAL:
+		return AWS_GLOBAL_ARN_PREFIX + arn
+	default:
+		return AWS_CHINA_ARN_PREFIX + arn
+	}
+}
+
+func (cli *SAwsClient) getIamCommonArn(arn string) string {
+	switch cli.GetAccessEnv() {
+	case api.CLOUD_ACCESS_ENV_AWS_GLOBAL:
+		return strings.TrimPrefix(arn, AWS_GLOBAL_ARN_PREFIX)
+	default:
+		return strings.TrimPrefix(arn, AWS_CHINA_ARN_PREFIX)
+	}
 }
 
 func GetDefaultRegionId(accessUrl string) string {
@@ -189,7 +220,7 @@ func (self *SAwsClient) fetchRegions() error {
 
 func (client *SAwsClient) getAwsSession(regionId string) (*session.Session, error) {
 	httpClient := client.cpcfg.HttpClient()
-	return session.NewSession(&sdk.Config{
+	s, err := session.NewSession(&sdk.Config{
 		Region: sdk.String(regionId),
 		Credentials: credentials.NewStaticCredentials(
 			client.accessKey, client.accessSecret, "",
@@ -198,6 +229,14 @@ func (client *SAwsClient) getAwsSession(regionId string) (*session.Session, erro
 		DisableParamValidation:        sdk.Bool(true),
 		CredentialsChainVerboseErrors: sdk.Bool(true),
 	})
+	if err != nil {
+		return nil, err
+	}
+	if client.debug {
+		logLevel := aws.LogLevelType(uint(aws.LogDebugWithRequestErrors) + uint(aws.LogDebugWithHTTPBody) + uint(aws.LogDebugWithSigning))
+		s.Config.LogLevel = &logLevel
+	}
+	return s, nil
 }
 
 func (self *SAwsClient) invalidateIBuckets() {
@@ -387,6 +426,48 @@ func (self *SAwsClient) GetAccessEnv() string {
 	}
 }
 
+func (self *SAwsClient) request(regionId, serviceName, serviceId, apiVersion string, apiName string, params map[string]string, retval interface{}) error {
+	if len(regionId) == 0 {
+		regionId = self.getDefaultRegionId()
+	}
+	session, err := self.getAwsSession(regionId)
+	if err != nil {
+		return err
+	}
+	c := session.ClientConfig(serviceName)
+	metadata := metadata.ClientInfo{
+		ServiceName:   serviceName,
+		ServiceID:     serviceId,
+		SigningName:   c.SigningName,
+		SigningRegion: c.SigningRegion,
+		Endpoint:      c.Endpoint,
+		APIVersion:    apiVersion,
+	}
+
+	if self.debug {
+		logLevel := aws.LogLevelType(uint(aws.LogDebugWithRequestErrors) + uint(aws.LogDebugWithHTTPBody))
+		c.Config.LogLevel = &logLevel
+	}
+
+	client := client.New(*c.Config, metadata, c.Handlers)
+	client.Handlers.Sign.PushBackNamed(v4.SignRequestHandler)
+	client.Handlers.Build.PushBackNamed(buildHandler)
+	client.Handlers.Unmarshal.PushBackNamed(UnmarshalHandler)
+	client.Handlers.UnmarshalMeta.PushBackNamed(query.UnmarshalMetaHandler)
+	client.Handlers.UnmarshalError.PushBackNamed(query.UnmarshalErrorHandler)
+	client.Handlers.Validate.Remove(corehandlers.ValidateEndpointHandler)
+	return jsonRequest(client, apiName, params, retval, true)
+
+}
+
+func (self *SAwsClient) iamRequest(apiName string, params map[string]string, retval interface{}) error {
+	return self.request("", IAM_SERVICE_NAME, IAM_SERVICE_ID, "2010-05-08", apiName, params, retval)
+}
+
+func (self *SAwsClient) stsRequest(apiName string, params map[string]string, retval interface{}) error {
+	return self.request("", STS_SERVICE_NAME, STS_SERVICE_ID, "2011-06-15", apiName, params, retval)
+}
+
 func jsonRequest(cli *client.Client, apiName string, params map[string]string, retval interface{}, debug bool) error {
 	op := &request.Operation{
 		Name:       apiName,
@@ -403,6 +484,9 @@ func jsonRequest(cli *client.Client, apiName string, params map[string]string, r
 	req := cli.NewRequest(op, params, retval)
 	err := req.Send()
 	if err != nil {
+		if e, ok := err.(awserr.RequestFailure); ok && e.StatusCode() == 404 {
+			return cloudprovider.ErrNotFound
+		}
 		return err
 	}
 	return nil
@@ -418,6 +502,7 @@ func (self *SAwsClient) GetCapabilities() []string {
 		cloudprovider.CLOUD_CAPABILITY_RDS,
 		// cloudprovider.CLOUD_CAPABILITY_CACHE,
 		// cloudprovider.CLOUD_CAPABILITY_EVENT,
+		cloudprovider.CLOUD_CAPABILITY_CLOUDID,
 	}
 	return caps
 }
@@ -435,4 +520,60 @@ func cloudWatchRequest(cli *client.Client, apiName string, params *cloudwatch.Ge
 		return err
 	}
 	return nil
+}
+
+func (client *SAwsClient) GetIamLoginUrl() string {
+	identity, err := client.GetCallerIdentity()
+	if err != nil {
+		log.Errorf("failed to get caller identity error: %v", err)
+		return ""
+	}
+
+	switch client.GetAccessEnv() {
+	case api.CLOUD_ACCESS_ENV_AWS_CHINA:
+		return fmt.Sprintf("https://%s.signin.amazonaws.cn/console/", identity.Account)
+	default:
+		return fmt.Sprintf("https://%s.signin.aws.amazon.com/console/", identity.Account)
+	}
+}
+
+func (client *SAwsClient) GetBucketCannedAcls() []string {
+	switch client.GetAccessEnv() {
+	case api.CLOUD_ACCESS_ENV_AWS_CHINA:
+		return []string{
+			string(cloudprovider.ACLPrivate),
+		}
+	default:
+		return []string{
+			string(cloudprovider.ACLPrivate),
+			string(cloudprovider.ACLAuthRead),
+			string(cloudprovider.ACLPublicRead),
+			string(cloudprovider.ACLPublicReadWrite),
+		}
+	}
+}
+
+func (client *SAwsClient) GetObjectCannedAcls() []string {
+	switch client.GetAccessEnv() {
+	case api.CLOUD_ACCESS_ENV_AWS_CHINA:
+		return []string{
+			string(cloudprovider.ACLPrivate),
+		}
+	default:
+		return []string{
+			string(cloudprovider.ACLPrivate),
+			string(cloudprovider.ACLAuthRead),
+			string(cloudprovider.ACLPublicRead),
+			string(cloudprovider.ACLPublicReadWrite),
+		}
+	}
+}
+
+func (client *SAwsClient) GetSamlEntityId() string {
+	switch client.accessUrl {
+	case AWS_CHINA_CLOUDENV:
+		return cloudprovider.SAML_ENTITY_ID_AWS_CN
+	default:
+		return cloudprovider.SAML_ENTITY_ID_AWS
+	}
 }

@@ -34,7 +34,7 @@ func InitHandlers(app *appsrv.Application) {
 
 	db.RegistUserCredCacheUpdater()
 
-	db.AddProjectResourceCountHandler("", app)
+	db.AddScopeResourceCountHandler("", app)
 
 	quotas.AddQuotaHandler(&models.QuotaManager.SQuotaBaseManager, "", app)
 	quotas.AddQuotaHandler(&models.RegionQuotaManager.SQuotaBaseManager, "", app)
@@ -88,6 +88,8 @@ func InitHandlers(app *appsrv.Application) {
 		models.ScalingAlarmManager,
 		models.ScalingGroupGuestManager,
 		models.ScalingGroupNetworkManager,
+
+		models.ScheduledTaskLabelManager,
 	} {
 		db.RegisterModelManager(manager)
 	}
@@ -148,6 +150,8 @@ func InitHandlers(app *appsrv.Application) {
 		models.AwsCachedLbbgManager,
 		models.QcloudCachedLbManager,
 		models.QcloudCachedLbbgManager,
+		models.OpenstackCachedLbManager,
+		models.OpenstackCachedLbbgManager,
 		models.RouteTableManager,
 
 		models.SchedpolicyManager,
@@ -181,6 +185,9 @@ func InitHandlers(app *appsrv.Application) {
 		models.ScalingActivityManager,
 		models.PolicyDefinitionManager,
 		models.PolicyAssignmentManager,
+
+		models.ScheduledTaskManager,
+		models.ScheduledTaskActivityManager,
 	} {
 		db.RegisterModelManager(manager)
 		handler := db.NewModelHandler(manager)

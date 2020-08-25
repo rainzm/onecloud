@@ -39,7 +39,7 @@ func init() {
 type QueryCondition struct {
 	Index         int
 	Query         AlertQuery
-	Reducer       *queryReducer
+	Reducer       Reducer
 	Evaluator     AlertEvaluator
 	Operator      string
 	HandleRequest tsdb.HandleRequestFunc
@@ -63,7 +63,7 @@ type FormatCond struct {
 func (c *QueryCondition) GenerateFormatCond(meta *tsdb.QueryResultMeta) *FormatCond {
 	return &FormatCond{
 		QueryMeta: meta,
-		Reducer:   c.Reducer.Type,
+		Reducer:   c.Reducer.GetType(),
 		Evaluator: c.Evaluator,
 	}
 }
@@ -100,7 +100,7 @@ func (c *QueryCondition) Eval(context *alerting.EvalContext) (*alerting.Conditio
 	evalMatchCount := 0
 	var matches []*monitor.EvalMatch
 
-	for idx, series := range seriesList {
+	for _, series := range seriesList {
 		reducedValue := c.Reducer.Reduce(series)
 		evalMatch := c.Evaluator.Eval(reducedValue)
 
@@ -119,8 +119,9 @@ func (c *QueryCondition) Eval(context *alerting.EvalContext) (*alerting.Conditio
 		}
 		tags := c.filterTags(series.Tags)
 		var meta *tsdb.QueryResultMeta
-		if len(metas) > idx {
-			meta = &metas[idx]
+		if len(metas) > 0 {
+			//the relation metas with series is 1 to more
+			meta = &metas[0]
 		}
 		if evalMatch {
 			matches = append(matches, &monitor.EvalMatch{
@@ -130,6 +131,17 @@ func (c *QueryCondition) Eval(context *alerting.EvalContext) (*alerting.Conditio
 				Tags:      tags,
 			})
 		}
+<<<<<<< HEAD
+		if evalMatch {
+			matches = append(matches, &monitor.EvalMatch{
+				Condition: c.GenerateFormatCond(meta).String(),
+				Metric:    series.Name,
+				Value:     reducedValue,
+				Tags:      tags,
+			})
+		}
+=======
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	}
 
 	// handle no series special case
@@ -283,9 +295,13 @@ func newQueryCondition(model *monitor.AlertCondition, index int) (*QueryConditio
 	}
 
 	cond.Query.DataSourceId = q.DataSourceId
-	reducer := model.Reducer
-	cond.Reducer = newSimpleReducer(reducer.Type)
-
+	//reducer := model.Reducer
+	//cond.Reducer = newSimpleReducer(reducer.Type)
+	reducer, err := NewAlertReducer(&model.Reducer)
+	if err != nil {
+		return nil, fmt.Errorf("error in condition %v: %v", index, err)
+	}
+	cond.Reducer = reducer
 	evaluator, err := NewAlertEvaluator(&model.Evaluator)
 	if err != nil {
 		return nil, fmt.Errorf("error in condition %v: %v", index, err)

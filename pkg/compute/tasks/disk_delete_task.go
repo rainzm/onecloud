@@ -44,13 +44,13 @@ func (self *DiskDeleteTask) OnInit(ctx context.Context, obj db.IStandaloneModel,
 	cnt, err := disk.GetGuestDiskCount()
 	if err != nil {
 		reason := "Disk GetGuestDiskCount fail: " + err.Error()
-		self.SetStageFailed(ctx, reason)
+		self.SetStageFailed(ctx, jsonutils.NewString(reason))
 		db.OpsLog.LogEvent(disk, db.ACT_DELOCATE_FAIL, reason, self.UserCred)
 		return
 	}
 	if cnt > 0 {
 		reason := "Disk has been attached to server"
-		self.SetStageFailed(ctx, reason)
+		self.SetStageFailed(ctx, jsonutils.NewString(reason))
 		db.OpsLog.LogEvent(disk, db.ACT_DELOCATE_FAIL, reason, self.UserCred)
 		return
 	}
@@ -101,9 +101,12 @@ func (self *DiskDeleteTask) startDeleteDisk(ctx context.Context, disk *models.SD
 	)
 
 	storage = disk.GetStorage()
-	if storage != nil {
-		host = storage.GetMasterHost()
+	if storage == nil { // dirty data
+		self.OnGuestDiskDeleteComplete(ctx, disk, nil)
+		return
 	}
+
+	host = storage.GetMasterHost()
 
 	isPurge := false
 	if (host == nil || !host.GetEnabled()) && jsonutils.QueryBoolean(self.Params, "purge", false) {
@@ -112,21 +115,25 @@ func (self *DiskDeleteTask) startDeleteDisk(ctx context.Context, disk *models.SD
 	disk.SetStatus(self.UserCred, api.DISK_DEALLOC, "")
 	if isPurge {
 		self.OnGuestDiskDeleteComplete(ctx, disk, nil)
+		return
+	}
+	if isNeed, _ := disk.IsNeedWaitSnapshotsDeleted(); isNeed { // for kvm rbd disk
+		self.OnGuestDiskDeleteComplete(ctx, disk, nil)
+		return
+	}
+	if len(disk.BackupStorageId) > 0 {
+		self.SetStage("OnMasterStorageDeleteDiskComplete", nil)
 	} else {
-		if isNeed, _ := disk.IsNeedWaitSnapshotsDeleted(); isNeed {
-			self.OnGuestDiskDeleteComplete(ctx, disk, nil)
-			return
-		}
-		if len(disk.BackupStorageId) > 0 {
-			self.SetStage("OnMasterStorageDeleteDiskComplete", nil)
-		} else {
-			self.SetStage("OnGuestDiskDeleteComplete", nil)
-		}
-		if host == nil {
-			self.OnGuestDiskDeleteCompleteFailed(ctx, disk, jsonutils.NewString("fail to find master host"))
-		} else if err := host.GetHostDriver().RequestDeallocateDiskOnHost(ctx, host, storage, disk, self); err != nil {
-			self.OnGuestDiskDeleteCompleteFailed(ctx, disk, jsonutils.NewString(err.Error()))
-		}
+		self.SetStage("OnGuestDiskDeleteComplete", nil)
+	}
+	if host == nil {
+		self.OnGuestDiskDeleteCompleteFailed(ctx, disk, jsonutils.NewString("fail to find master host"))
+		return
+	}
+	err := host.GetHostDriver().RequestDeallocateDiskOnHost(ctx, host, storage, disk, self)
+	if err != nil {
+		self.OnGuestDiskDeleteCompleteFailed(ctx, disk, jsonutils.NewString(err.Error()))
+		return
 	}
 }
 
@@ -179,7 +186,7 @@ func (self *DiskDeleteTask) OnGuestDiskDeleteComplete(ctx context.Context, obj d
 
 func (self *DiskDeleteTask) OnGuestDiskDeleteCompleteFailed(ctx context.Context, disk *models.SDisk, reason jsonutils.JSONObject) {
 	disk.SetStatus(self.GetUserCred(), api.DISK_DEALLOC_FAILED, reason.String())
-	self.SetStageFailed(ctx, reason.String())
+	self.SetStageFailed(ctx, reason)
 	db.OpsLog.LogEvent(disk, db.ACT_DELOCATE_FAIL, disk.GetShortDesc(ctx), self.GetUserCred())
 	logclient.AddActionLogWithContext(ctx, disk, logclient.ACT_DELOCATE, reason, self.UserCred, false)
 }

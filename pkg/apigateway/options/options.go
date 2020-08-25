@@ -26,9 +26,16 @@ type GatewayOptions struct {
 
 	DisableModuleApiVersion bool `help:"Disable each modules default api version" default:"false"`
 
-	EnableTotp bool `help:"Enable two-factor authentication"  default:"false"`
+	EnableTotp bool `help:"Enable two-factor authentication" default:"true"`
 
-	SqlitePath string `help:"sqlite db path" default:"/etc/yunion/data/yunionapi.db"`
+	SsoRedirectUrl     string `help:"SSO idp redirect URL"`
+	SsoAuthCallbackUrl string `help:"SSO idp auth callback URL"`
+	SsoLinkCallbackUrl string `help:"SSO idp link user callback URL"`
+	LoginCallbackParam string `help:"Redirect callback parameter name after successful login"`
+
+	SsoUserNotFoundCallbackUrl string `help:"failure callback URL when SSO idp link user not found"`
+
+	ReturnFullDomainList bool `default:"true" help:"return domain list for get_regions API"`
 
 	common_options.CommonOptions `"request_worker_count->default":"32"`
 }

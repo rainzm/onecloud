@@ -49,11 +49,11 @@ type ElasticcacheResourceInfo struct {
 
 type ELasticcacheResourceInput struct {
 	// 弹性缓存实例(ID or Name)
-	Elasticcache string `json:"elasticcache"`
+	ElasticcacheId string `json:"elasticcache_id"`
 
 	// swagger:ignore
 	// Deprecated
-	ElasticcacheId string `json:"elasticcache_id" "yunion:deprecated-by":"elasticcache"`
+	Elasticcache string `json:"elasticcache" yunion-deprecated-by:"elasticcache_id"`
 }
 
 type ElasticcacheFilterListInput struct {
@@ -69,16 +69,20 @@ type ElasticcacheFilterListInput struct {
 
 type ElasticcacheAccountDetails struct {
 	apis.StatusStandaloneResourceDetails
+	apis.ProjectizedResourceInfo
 	ElasticcacheResourceInfo
 
 	SElasticcacheAccount
+	ProjectId string `json:"tenant_id"`
 }
 
 type ElasticcacheAclDetails struct {
 	apis.StandaloneResourceDetails
+	apis.ProjectizedResourceInfo
 	ElasticcacheResourceInfo
 
 	SElasticcacheAcl
+	ProjectId string `json:"tenant_id"`
 }
 
 type ElasticcacheParameterDetails struct {

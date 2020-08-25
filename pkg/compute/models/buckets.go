@@ -28,6 +28,7 @@ import (
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/util/compare"
+	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
 	api "yunion.io/x/onecloud/pkg/apis/compute"
@@ -213,7 +214,7 @@ func (manager *SBucketManager) newFromCloudBucket(
 
 	bucket.IsEmulated = false
 
-	err = manager.TableSpec().Insert(&bucket)
+	err = manager.TableSpec().Insert(ctx, &bucket)
 	if err != nil {
 		return nil, errors.Wrap(err, "Insert")
 	}
@@ -418,6 +419,16 @@ func (manager *SBucketManager) ValidateCreateData(
 	err = isValidBucketName(input.Name)
 	if err != nil {
 		return input, httperrors.NewInputParameterError("invalid bucket name %s: %s", input.Name, err)
+	}
+
+	if len(input.StorageClass) > 0 {
+		driver, err := managerV.GetProvider()
+		if err != nil {
+			return input, errors.Wrap(err, "GetProvider")
+		}
+		if !utils.IsInStringArray(input.StorageClass, driver.GetStorageClasses(cloudRegionV.Id)) {
+			return input, errors.Wrapf(httperrors.ErrInputParameter, "invalid storage class %s", input.StorageClass)
+		}
 	}
 
 	quotaKeys := fetchRegionalQuotaKeys(rbacutils.ScopeProject, ownerId, cloudRegionV, managerV)
@@ -674,31 +685,41 @@ func (manager *SBucketManager) OrderByExtraFields(
 func (bucket *SBucket) AllowGetDetailsObjects(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
+	input api.BucketGetObjectsInput,
 ) bool {
 	return bucket.IsOwner(userCred)
 }
 
+// 获取bucket的对象列表
+//
+// 获取bucket的对象列表
 func (bucket *SBucket) GetDetailsObjects(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-) (jsonutils.JSONObject, error) {
+	input api.BucketGetObjectsInput,
+) (api.BucketGetObjectsOutput, error) {
+	output := api.BucketGetObjectsOutput{}
 	if len(bucket.ExternalId) == 0 {
-		return nil, httperrors.NewInvalidStatusError("no external bucket")
+		return output, httperrors.NewInvalidStatusError("no external bucket")
 	}
 	iBucket, err := bucket.GetIBucket()
 	if err != nil {
 		if errors.Cause(err) == httperrors.ErrInvalidStatus {
-			return nil, httperrors.NewInvalidStatusError("%s", err)
+			return output, httperrors.NewInvalidStatusError("%s", err)
 		} else {
-			return nil, httperrors.NewInternalServerError("fail to find external bucket: %s", err)
+			return output, httperrors.NewInternalServerError("fail to find external bucket: %s", err)
 		}
 	}
-	prefix, _ := query.GetString("prefix")
-	isRecursive := jsonutils.QueryBoolean(query, "recursive", false)
-	marker, _ := query.GetString("paging_marker")
-	limit, _ := query.Int("limit")
+	prefix := input.Prefix
+	isRecursive := false
+	if input.Recursive != nil {
+		isRecursive = *input.Recursive
+	}
+	marker := input.PagingMarker
+	limit := 0
+	if input.Limit != nil {
+		limit = *input.Limit
+	}
 	if limit <= 0 {
 		limit = 50
 	} else if limit > 1000 {
@@ -706,49 +727,54 @@ func (bucket *SBucket) GetDetailsObjects(
 	}
 	objects, nextMarker, err := cloudprovider.GetPagedObjects(iBucket, prefix, isRecursive, marker, int(limit))
 	if err != nil {
-		return nil, httperrors.NewInternalServerError("fail to get objects: %s", err)
+		return output, httperrors.NewInternalServerError("fail to get objects: %s", err)
 	}
-	retArray := jsonutils.NewArray()
 	for i := range objects {
-		retArray.Add(cloudprovider.ICloudObject2JSONObject(objects[i]))
+		output.Data = append(output.Data, cloudprovider.ICloudObject2Struct(objects[i]))
 	}
-	ret := jsonutils.NewDict()
-	ret.Add(retArray, "data")
+	output.MarkerField = "key"
+	output.MarkerOrder = "DESC"
 	if len(nextMarker) > 0 {
-		ret.Add(jsonutils.NewString(nextMarker), "next_marker")
-		ret.Add(jsonutils.NewString("key"), "marker_field")
-		ret.Add(jsonutils.NewString("DESC"), "marker_order")
+		output.NextMarker = nextMarker
 	}
-	return ret, nil
+	return output, nil
 }
 
 func (bucket *SBucket) AllowPerformTempUrl(ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
+	input api.BucketPerformTempUrlInput,
 ) bool {
 	return bucket.IsOwner(userCred)
 }
 
+// 获取访问对象的临时URL
+//
+// 获取访问对象的临时URL
 func (bucket *SBucket) PerformTempUrl(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
-) (jsonutils.JSONObject, error) {
+	input api.BucketPerformTempUrlInput,
+) (api.BucketPerformTempUrlOutput, error) {
+	output := api.BucketPerformTempUrlOutput{}
+
 	if len(bucket.ExternalId) == 0 {
-		return nil, httperrors.NewInvalidStatusError("no external bucket")
+		return output, httperrors.NewInvalidStatusError("no external bucket")
 	}
 
-	method, _ := data.GetString("method")
-	key, _ := data.GetString("key")
-	expire, _ := data.Int("expire_seconds")
+	method := input.Method
+	key := input.Key
+	expire := 0
+	if input.ExpireSeconds != nil {
+		expire = *input.ExpireSeconds
+	}
 
 	if len(method) == 0 {
 		method = "GET"
 	}
 	if len(key) == 0 {
-		return nil, httperrors.NewInputParameterError("missing key")
+		return output, httperrors.NewInputParameterError("missing key")
 	}
 	if expire == 0 {
 		expire = 60 // default 60 seconds
@@ -757,18 +783,17 @@ func (bucket *SBucket) PerformTempUrl(
 	iBucket, err := bucket.GetIBucket()
 	if err != nil {
 		if errors.Cause(err) == httperrors.ErrInvalidStatus {
-			return nil, httperrors.NewInvalidStatusError("%s", err)
+			return output, httperrors.NewInvalidStatusError("%s", err)
 		} else {
-			return nil, httperrors.NewInternalServerError("fail to find external bucket: %s", err)
+			return output, httperrors.NewInternalServerError("fail to find external bucket: %s", err)
 		}
 	}
 	tmpUrl, err := iBucket.GetTempUrl(method, key, time.Duration(expire)*time.Second)
 	if err != nil {
-		return nil, httperrors.NewInternalServerError("fail to generate temp url: %s", err)
+		return output, httperrors.NewInternalServerError("fail to generate temp url: %s", err)
 	}
-	ret := jsonutils.NewDict()
-	ret.Add(jsonutils.NewString(tmpUrl), "url")
-	return ret, nil
+	output.Url = tmpUrl
+	return output, nil
 }
 
 func (bucket *SBucket) AllowPerformMakedir(ctx context.Context,
@@ -779,17 +804,20 @@ func (bucket *SBucket) AllowPerformMakedir(ctx context.Context,
 	return bucket.IsOwner(userCred)
 }
 
+// 新建对象目录
+//
+// 新建对象目录
 func (bucket *SBucket) PerformMakedir(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
+	input api.BucketPerformMakedirInput,
 ) (jsonutils.JSONObject, error) {
 	if len(bucket.ExternalId) == 0 {
 		return nil, httperrors.NewInvalidStatusError("no external bucket")
 	}
 
-	key, _ := data.GetString("key")
+	key := input.Key
 	key = strings.Trim(key, " /")
 	if len(key) == 0 {
 		return nil, httperrors.NewInputParameterError("empty directory name")
@@ -853,21 +881,20 @@ func (bucket *SBucket) AllowPerformDelete(ctx context.Context,
 	return bucket.IsOwner(userCred)
 }
 
+// 删除对象
+//
+// 删除对象
 func (bucket *SBucket) PerformDelete(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
 	query jsonutils.JSONObject,
-	data jsonutils.JSONObject,
+	input api.BucketPerformDeleteInput,
 ) (jsonutils.JSONObject, error) {
 	if len(bucket.ExternalId) == 0 {
 		return nil, httperrors.NewInvalidStatusError("no external bucket")
 	}
 
-	keys, _ := data.Get("keys")
-	if keys == nil {
-		return nil, httperrors.NewInputParameterError("missing keys")
-	}
-	keyStrs := keys.(*jsonutils.JSONArray).GetStringArray()
+	keyStrs := input.Keys
 	if len(keyStrs) == 0 {
 		return nil, httperrors.NewInputParameterError("empty keys")
 	}
@@ -910,6 +937,9 @@ func (bucket *SBucket) AllowPerformUpload(ctx context.Context,
 	return bucket.IsOwner(userCred)
 }
 
+// 上传对象
+//
+// 上传对象
 func (bucket *SBucket) PerformUpload(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -956,14 +986,17 @@ func (bucket *SBucket) PerformUpload(
 		return nil, httperrors.NewInputParameterError("Content-Length negative %d", sizeBytes)
 	}
 	storageClass := appParams.Request.Header.Get(api.BUCKET_UPLOAD_OBJECT_STORAGECLASS_HEADER)
+	driver, err := bucket.GetDriver()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetDriver")
+	}
+	if len(storageClass) > 0 && !utils.IsInStringArray(storageClass, driver.GetStorageClasses(bucket.CloudregionId)) {
+		return nil, errors.Wrapf(httperrors.ErrInputParameter, "invalid storage class %s", storageClass)
+	}
+
 	aclStr := appParams.Request.Header.Get(api.BUCKET_UPLOAD_OBJECT_ACL_HEADER)
-	if len(aclStr) > 0 {
-		switch cloudprovider.TBucketACLType(aclStr) {
-		case cloudprovider.ACLPrivate, cloudprovider.ACLAuthRead, cloudprovider.ACLPublicRead, cloudprovider.ACLPublicReadWrite:
-			// do nothing
-		default:
-			return nil, httperrors.NewInputParameterError("invalid acl: %s", aclStr)
-		}
+	if len(aclStr) > 0 && !utils.IsInStringArray(aclStr, driver.GetObjectCannedAcls(bucket.CloudregionId)) {
+		return nil, errors.Wrapf(httperrors.ErrInputParameter, "invalid acl %s", aclStr)
 	}
 
 	inc := cloudprovider.SBucketStats{}
@@ -1030,6 +1063,9 @@ func (bucket *SBucket) AllowPerformAcl(ctx context.Context,
 	return bucket.IsOwner(userCred)
 }
 
+// 设置对象和bucket的ACL
+//
+// 设置对象和bucket的ACL
 func (bucket *SBucket) PerformAcl(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -1038,15 +1074,23 @@ func (bucket *SBucket) PerformAcl(
 ) (jsonutils.JSONObject, error) {
 	err := input.Validate()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "ValidateInput")
+	}
+
+	provider, err := bucket.GetDriver()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetDriver")
 	}
 
 	iBucket, objects, err := bucket.processObjectsActionInput(input.BucketObjectsActionInput)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "processObjectsActionInput")
 	}
 
 	if len(objects) == 0 {
+		if !utils.IsInStringArray(string(input.Acl), provider.GetBucketCannedAcls(bucket.CloudregionId)) {
+			return nil, errors.Wrapf(httperrors.ErrInputParameter, "unsupported bucket canned acl %s", input.Acl)
+		}
 		err = iBucket.SetAcl(input.Acl)
 		if err != nil {
 			return nil, httperrors.NewInternalServerError("setAcl error %s", err)
@@ -1057,6 +1101,10 @@ func (bucket *SBucket) PerformAcl(
 			return nil, httperrors.NewInternalServerError("syncWithCloudBucket error %s", err)
 		}
 		return nil, nil
+	}
+
+	if !utils.IsInStringArray(string(input.Acl), provider.GetObjectCannedAcls(bucket.CloudregionId)) {
+		return nil, errors.Wrapf(httperrors.ErrInputParameter, "unsupported object canned acl %s", input.Acl)
 	}
 
 	errs := make([]error, 0)
@@ -1082,6 +1130,8 @@ func (bucket *SBucket) AllowPerformSyncstatus(ctx context.Context,
 	return bucket.IsOwner(userCred)
 }
 
+// 同步存储桶状态
+//
 // 同步存储桶状态
 func (bucket *SBucket) PerformSyncstatus(
 	ctx context.Context,
@@ -1157,23 +1207,27 @@ func (bucket *SBucket) AllowGetDetailsAcl(
 	return bucket.IsOwner(userCred)
 }
 
+// 获取对象或bucket的ACL
+//
+// 获取对象或bucket的ACL
 func (bucket *SBucket) GetDetailsAcl(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
-	query jsonutils.JSONObject,
-) (jsonutils.JSONObject, error) {
+	input api.BucketGetAclInput,
+) (api.BucketGetAclOutput, error) {
+	output := api.BucketGetAclOutput{}
 	if len(bucket.ExternalId) == 0 {
-		return nil, httperrors.NewInvalidStatusError("no external bucket")
+		return output, httperrors.NewInvalidStatusError("no external bucket")
 	}
 	iBucket, err := bucket.GetIBucket()
 	if err != nil {
 		if errors.Cause(err) == httperrors.ErrInvalidStatus {
-			return nil, httperrors.NewInvalidStatusError("%s", err)
+			return output, httperrors.NewInvalidStatusError("%s", err)
 		} else {
-			return nil, httperrors.NewInternalServerError("fail to find external bucket: %s", err)
+			return output, httperrors.NewInternalServerError("fail to find external bucket: %s", err)
 		}
 	}
-	objKey, _ := query.GetString("key")
+	objKey := input.Key
 	var acl cloudprovider.TBucketACLType
 	if len(objKey) == 0 {
 		acl = iBucket.GetAcl()
@@ -1181,16 +1235,15 @@ func (bucket *SBucket) GetDetailsAcl(
 		object, err := cloudprovider.GetIObject(iBucket, objKey)
 		if err != nil {
 			if err == cloudprovider.ErrNotFound {
-				return nil, httperrors.NewNotFoundError("object %s not found", objKey)
+				return output, httperrors.NewNotFoundError("object %s not found", objKey)
 			} else {
-				return nil, httperrors.NewInternalServerError("iBucket.GetIObjects error %s", err)
+				return output, httperrors.NewInternalServerError("iBucket.GetIObjects error %s", err)
 			}
 		}
 		acl = object.GetAcl()
 	}
-	ret := jsonutils.NewDict()
-	ret.Add(jsonutils.NewString(string(acl)), "acl")
-	return ret, nil
+	output.Acl = string(acl)
+	return output, nil
 }
 
 func (manager *SBucketManager) usageQByCloudEnv(q *sqlchemy.SQuery, providers []string, brands []string, cloudEnv string) *sqlchemy.SQuery {
@@ -1198,7 +1251,7 @@ func (manager *SBucketManager) usageQByCloudEnv(q *sqlchemy.SQuery, providers []
 }
 
 func (manager *SBucketManager) usageQByRanges(q *sqlchemy.SQuery, rangeObjs []db.IStandaloneModel) *sqlchemy.SQuery {
-	return RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"))
+	return RangeObjectsFilter(q, rangeObjs, q.Field("cloudregion_id"), nil, q.Field("manager_id"), nil, nil)
 }
 
 func (manager *SBucketManager) usageQ(q *sqlchemy.SQuery, rangeObjs []db.IStandaloneModel, providers []string, brands []string, cloudEnv string) *sqlchemy.SQuery {

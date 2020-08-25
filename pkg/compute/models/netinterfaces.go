@@ -29,6 +29,7 @@ import (
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
+// +onecloud:swagger-gen-ignore
 type SNetInterface struct {
 	db.SModelBase
 
@@ -42,6 +43,7 @@ type SNetInterface struct {
 	Mtu         int16  `nullable:"true"`                            // Column(SMALLINT, nullable=True)
 }
 
+// +onecloud:swagger-gen-ignore
 type SNetInterfaceManager struct {
 	db.SModelBaseManager
 }

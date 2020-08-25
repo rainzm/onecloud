@@ -1,3 +1,17 @@
+// Copyright 2019 Yunion
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package suggestsysdrivers
 
 import (
@@ -16,33 +30,31 @@ import (
 )
 
 type LBUnused struct {
-	monitor.LBUnused
+	*baseDriver
 }
 
 func NewLBUnusedDriver() models.ISuggestSysRuleDriver {
 	return &LBUnused{
-		LBUnused: monitor.LBUnused{},
+		baseDriver: newBaseDriver(
+			monitor.LB_UNUSED,
+			monitor.LB_MONITOR_RES_TYPE,
+			monitor.DELETE_DRIVER_ACTION,
+			monitor.LB_MONITOR_SUGGEST,
+		),
 	}
 }
 
-func (_ *LBUnused) GetType() string {
-	return monitor.LB_UN_USED
-}
-
-func (rule *LBUnused) GetResourceType() string {
-	return string(monitor.LB_MONITOR_RES_TYPE)
-}
-
-func (rule *LBUnused) ValidateSetting(input *monitor.SSuggestSysAlertSetting) error {
+func (drv *LBUnused) ValidateSetting(input *monitor.SSuggestSysAlertSetting) error {
 	obj := new(monitor.LBUnused)
 	input.LBUnused = obj
 	return nil
 }
 
-func (rule *LBUnused) DoSuggestSysRule(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
-	doSuggestSysRule(ctx, userCred, isStart, rule)
+func (drv *LBUnused) DoSuggestSysRule(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	doSuggestSysRule(ctx, userCred, isStart, drv)
 }
 
+<<<<<<< HEAD
 func (rule *LBUnused) Run(instance *monitor.SSuggestSysAlertSetting) {
 	oldAlert, err := getLastAlerts(rule)
 	if err != nil {
@@ -55,9 +67,13 @@ func (rule *LBUnused) Run(instance *monitor.SSuggestSysAlertSetting) {
 		return
 	}
 	DealAlertData(rule.GetType(), oldAlert, newAlert.Value())
+=======
+func (drv *LBUnused) Run(rule *models.SSuggestSysRule, setting *monitor.SSuggestSysAlertSetting) {
+	Run(drv, rule, setting)
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 }
 
-func (rule *LBUnused) getLatestAlerts(instance *monitor.SSuggestSysAlertSetting) (*jsonutils.JSONArray, error) {
+func (drv *LBUnused) GetLatestAlerts(rule *models.SSuggestSysRule, instance *monitor.SSuggestSysAlertSetting) ([]jsonutils.JSONObject, error) {
 	session := auth.GetAdminSession(context.Background(), "", "")
 	query := jsonutils.NewDict()
 	query.Add(jsonutils.NewString("0"), "limit")
@@ -66,18 +82,31 @@ func (rule *LBUnused) getLatestAlerts(instance *monitor.SSuggestSysAlertSetting)
 	if err != nil {
 		return nil, err
 	}
-	lbArr := jsonutils.NewArray()
+	lbArr := make([]jsonutils.JSONObject, 0)
 	for _, lb := range lbs.Data {
 		lbId, _ := lb.GetString("id")
-		contains, err := containsLbBackEndGroups(lbId)
+
+		contains, problems, err := containsLbBackEndGroups(lbId)
 		if err != nil {
-			return lbArr, err
+			log.Errorln(err)
+			continue
 		}
 		if *contains {
 			continue
 		}
-
-		suggestSysAlert, err := getSuggestSysAlertFromJson(lb, rule)
+		contains, err = getLbListeners(lbId)
+		if err != nil {
+			log.Errorln(err)
+			continue
+		}
+		if *contains {
+			continue
+		}
+		problems = append(problems, monitor.SuggestAlertProblem{
+			Type:        "listener",
+			Description: monitor.LB_UNUSED_NLISTENER,
+		})
+		suggestSysAlert, err := getSuggestSysAlertFromJson(lb, drv)
 		if err != nil {
 			return lbArr, errors.Wrap(err, "getLatestAlerts's alertData Unmarshal error")
 		}
@@ -89,18 +118,40 @@ func (rule *LBUnused) getLatestAlerts(instance *monitor.SSuggestSysAlertSetting)
 		if instance != nil {
 			suggestSysAlert.MonitorConfig = jsonutils.Marshal(instance)
 		}
+		suggestSysAlert.Problem = jsonutils.Marshal(problems)
 
-		problem := jsonutils.NewDict()
-		problem.Add(jsonutils.NewString(rule.GetType()), "lb")
-		suggestSysAlert.Problem = problem
-
-		lbArr.Add(jsonutils.Marshal(suggestSysAlert))
+		lbArr = append(lbArr, jsonutils.Marshal(suggestSysAlert))
 	}
 	return lbArr, nil
 }
 
-func containsLbBackEndGroups(lbId string) (*bool, error) {
+func getLbListeners(lbId string) (*bool, error) {
 	contains := false
+	session := auth.GetAdminSession(context.Background(), "", "")
+	query := jsonutils.NewDict()
+	query.Add(jsonutils.NewString("0"), "limit")
+	query.Add(jsonutils.NewString("system"), "scope")
+	query.Add(jsonutils.NewString(lbId), "loadbalancer")
+	listeners, err := modules.LoadbalancerListeners.List(session, query)
+	if err != nil {
+		return nil, err
+	}
+	if listeners != nil && len(listeners.Data) > 0 {
+		for _, listener := range listeners.Data {
+			status, _ := listener.GetString("status")
+			if status == "enabled" {
+				contains = true
+				break
+			}
+		}
+	}
+	return &contains, nil
+}
+
+func containsLbBackEndGroups(lbId string) (*bool, []monitor.SuggestAlertProblem, error) {
+	contains := false
+
+	problems := make([]monitor.SuggestAlertProblem, 0)
 	session := auth.GetAdminSession(context.Background(), "", "")
 	query := jsonutils.NewDict()
 	query.Add(jsonutils.NewString("0"), "limit")
@@ -108,23 +159,34 @@ func containsLbBackEndGroups(lbId string) (*bool, error) {
 	query.Add(jsonutils.NewString(lbId), "loadbalancer")
 	groups, err := modules.LoadbalancerBackendGroups.List(session, query)
 	if err != nil {
-		return nil, err
+		return nil, problems, err
 	}
 	for _, group := range groups.Data {
 		groupId, _ := group.GetString("id")
 		backEnds, err := containsLbBackEnd(groupId)
 		if err != nil {
-			return nil, err
+			return nil, problems, err
 		}
 		if *backEnds {
-			return backEnds, nil
+			return backEnds, problems, nil
 		}
 	}
-	return &contains, nil
+	if len(groups.Data) == 0 {
+		problems = append(problems, monitor.SuggestAlertProblem{
+			Type:        "backendgroup",
+			Description: monitor.LB_UNUSED_NBCGROUP,
+		})
+	}
+	problems = append(problems, monitor.SuggestAlertProblem{
+		Type:        "backend",
+		Description: monitor.LB_UNUSED_NBC,
+	})
+	return &contains, problems, nil
 }
 
 func containsLbBackEnd(groupId string) (*bool, error) {
 	contains := false
+
 	session := auth.GetAdminSession(context.Background(), "", "")
 	query := jsonutils.NewDict()
 	query.Add(jsonutils.NewString("0"), "limit")
@@ -144,6 +206,7 @@ func containsLbBackEnd(groupId string) (*bool, error) {
 func (rule *LBUnused) StartResolveTask(ctx context.Context, userCred mcclient.TokenCredential,
 	suggestSysAlert *models.SSuggestSysAlert,
 	params *jsonutils.JSONDict) error {
+	suggestSysAlert.SetStatus(userCred, monitor.SUGGEST_ALERT_START_DELETE, "")
 	task, err := taskman.TaskManager.NewTask(ctx, "ResolveUnusedTask", suggestSysAlert, userCred, params, "", "", nil)
 	if err != nil {
 		return err

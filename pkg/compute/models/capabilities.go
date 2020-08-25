@@ -42,6 +42,8 @@ type SCapabilities struct {
 	DisabledBrands              []string `json:",allowempty"`
 	ComputeEngineBrands         []string `json:",allowempty"`
 	DisabledComputeEngineBrands []string `json:",allowempty"`
+	CloudIdBrands               []string `json:",allowempty"`
+	DisabledCloudIdBrands       []string `json:",allowempty"`
 	NetworkManageBrands         []string `json:",allowempty"`
 	DisabledNetworkManageBrands []string `json:",allowempty"`
 	ObjectStorageBrands         []string `json:",allowempty"`
@@ -56,9 +58,14 @@ type SCapabilities struct {
 	MaxDataDiskCount            int
 	SchedPolicySupport          bool
 	Usable                      bool
-	PublicNetworkCount          int
-	DBInstance                  map[string]map[string]map[string][]string //map[engine][engineVersion][category][]{storage_type}
-	Specs                       jsonutils.JSONObject
+
+	// Deprecated
+	PublicNetworkCount int
+
+	AutoAllocNetworkCount int
+	DBInstance            map[string]map[string]map[string][]string //map[engine][engineVersion][category][]{storage_type}
+	Specs                 jsonutils.JSONObject
+	AvailableHostCount    int
 
 	StorageTypes2     map[string][]string                      `json:",allowempty"`
 	StorageTypes3     map[string]map[string]*SimpleStorageInfo `json:",allowempty"`
@@ -68,6 +75,7 @@ type SCapabilities struct {
 
 func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, region *SCloudregion, zone *SZone) (SCapabilities, error) {
 	capa := SCapabilities{}
+	var ownerId mcclient.IIdentityProvider
 	scopeStr := jsonutils.GetAnyString(query, []string{"scope"})
 	scope := rbacutils.String2Scope(scopeStr)
 	var domainId string
@@ -81,8 +89,11 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 			return capa, httperrors.NewGeneralError(err)
 		}
 		domainId = domain.GetId()
+		ownerId = &db.SOwnerId{DomainId: domainId}
+		scope = rbacutils.ScopeDomain
 	} else {
 		domainId = userCred.GetProjectDomainId()
+		ownerId = userCred
 	}
 	if scope == rbacutils.ScopeSystem {
 		result := policy.PolicyManager.Allow(scope, userCred, consts.GetServiceType(), "capabilities", policy.PolicyActionList)
@@ -106,7 +117,7 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 	capa.MinDataDiskCount = getMinDataDiskCount(region, zone)
 	capa.MaxDataDiskCount = getMaxDataDiskCount(region, zone)
 	capa.DBInstance = getDBInstanceInfo(region, zone)
-	capa.Usable = isUsable(region, zone, domainId)
+	capa.Usable = isUsable(ownerId, scope, region, zone)
 	if query == nil {
 		query = jsonutils.NewDict()
 	}
@@ -121,11 +132,48 @@ func GetCapabilities(ctx context.Context, userCred mcclient.TokenCredential, que
 	}
 	var err error
 	serverType := jsonutils.GetAnyString(query, []string{"host_type", "server_type"})
-	publicNetworkCount, _ := getNetworkPublicCount(region, zone, domainId, serverType)
-	capa.PublicNetworkCount = publicNetworkCount
+	autoAllocNetworkCount, _ := getAutoAllocNetworkCount(ownerId, scope, region, zone, serverType)
+	capa.PublicNetworkCount = autoAllocNetworkCount
+	capa.AutoAllocNetworkCount = autoAllocNetworkCount
 	mans := []ISpecModelManager{HostManager, IsolatedDeviceManager}
 	capa.Specs, err = GetModelsSpecs(ctx, userCred, query.(*jsonutils.JSONDict), mans...)
+	if err != nil {
+		return capa, err
+	}
+	capa.AvailableHostCount, err = GetAvailableHostCount(userCred, query.(*jsonutils.JSONDict))
 	return capa, err
+}
+
+func GetAvailableHostCount(userCred mcclient.TokenCredential, query *jsonutils.JSONDict) (int, error) {
+	zoneStr, _ := query.GetString("zone")
+	izone, _ := ZoneManager.FetchByIdOrName(userCred, zoneStr)
+	var zoneId string
+	if izone != nil {
+		zoneId = izone.GetId()
+	}
+
+	regionStr, _ := query.GetString("region")
+	iregion, _ := CloudregionManager.FetchByIdOrName(userCred, regionStr)
+	var regionId string
+	if iregion != nil {
+		regionId = iregion.GetId()
+	}
+
+	domainId, _ := query.GetString("domain_id")
+	q := HostManager.Query().Equals("enabled", true).
+		Equals("host_status", "online").Equals("host_type", api.HOST_TYPE_HYPERVISOR)
+	if len(domainId) > 0 {
+		ownerId := &db.SOwnerId{DomainId: domainId}
+		q = HostManager.FilterByOwner(q, ownerId, rbacutils.ScopeDomain)
+	}
+	if len(zoneId) > 0 {
+		q = q.Equals("zone_id", zoneId)
+	}
+	if len(regionId) > 0 {
+		subq := ZoneManager.Query("id").Equals("cloudregion_id", regionId).SubQuery()
+		q = q.Filter(sqlchemy.In(q.Field("zone_id"), subq))
+	}
+	return q.CountWithError()
 }
 
 func getRegionZoneSubq(region *SCloudregion) *sqlchemy.SSubQuery {
@@ -213,6 +261,7 @@ func getBrands(region *SCloudregion, zone *SZone, domainId string, capa *SCapabi
 	capa.ComputeEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_COMPUTE)
 	capa.NetworkManageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_NETWORK)
 	capa.ObjectStorageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_OBJECTSTORE)
+	capa.CloudIdBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.True, cloudprovider.CLOUD_CAPABILITY_CLOUDID)
 
 	if utils.IsInStringArray(api.HYPERVISOR_KVM, capa.Hypervisors) || utils.IsInStringArray(api.HYPERVISOR_BAREMETAL, capa.Hypervisors) {
 		capa.Brands = append(capa.Brands, api.ONECLOUD_BRAND_ONECLOUD)
@@ -224,6 +273,7 @@ func getBrands(region *SCloudregion, zone *SZone, domainId string, capa *SCapabi
 	capa.DisabledComputeEngineBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_COMPUTE)
 	capa.DisabledNetworkManageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_NETWORK)
 	capa.DisabledObjectStorageBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_OBJECTSTORE)
+	capa.DisabledCloudIdBrands, _ = CloudaccountManager.getBrandsOfCapability(region, zone, domainId, tristate.False, cloudprovider.CLOUD_CAPABILITY_CLOUDID)
 
 	return
 }
@@ -315,10 +365,10 @@ type StorageInfo struct {
 	Name            string
 	VirtualCapacity int64
 	Capacity        int64
-	Reserved        int64
+	Reserved        sql.NullInt64
 	StorageType     string
 	MediumType      string
-	Cmtbound        float32
+	Cmtbound        sql.NullFloat64
 	UsedCapacity    sql.NullInt64
 	WasteCapacity   sql.NullInt64
 	FreeCapacity    int64
@@ -440,7 +490,7 @@ func getStorageTypes(
 		addStorageInfo = func(storage *StorageInfo, simpleStorage *SimpleStorageInfo) {
 			simpleStorage.VirtualCapacity += storage.VirtualCapacity
 			simpleStorage.FreeCapacity += storage.FreeCapacity
-			simpleStorage.Reserved += storage.Reserved
+			simpleStorage.Reserved += storage.Reserved.Int64
 			simpleStorage.Capacity += storage.Capacity
 			simpleStorage.WasteCapacity += storage.WasteCapacity.Int64
 			simpleStorage.UsedCapacity += storage.UsedCapacity.Int64
@@ -493,10 +543,10 @@ func getStorageTypes(
 				}
 				allStorageTypes = append(allStorageTypes, storageType)
 			}
-			if storage.Cmtbound == 0 {
-				storage.Cmtbound = options.Options.DefaultStorageOvercommitBound
+			if storage.Cmtbound.Float64 == 0 {
+				storage.Cmtbound.Float64 = float64(options.Options.DefaultStorageOvercommitBound)
 			}
-			storage.VirtualCapacity = int64(float32((storage.Capacity - storage.Reserved)) * storage.Cmtbound)
+			storage.VirtualCapacity = int64(float64(storage.Capacity-storage.Reserved.Int64) * storage.Cmtbound.Float64)
 			storage.FreeCapacity = storage.VirtualCapacity - storage.UsedCapacity.Int64 - storage.WasteCapacity.Int64
 			addStorageInfo(&storage, simpleStorage)
 			storageInfos[storageType] = simpleStorage
@@ -561,46 +611,27 @@ func getGPUs(region *SCloudregion, zone *SZone, domainId string) []string {
 	return gpus
 }
 
-func getNetworkCount(region *SCloudregion, zone *SZone, domainId string) (int, error) {
-	return getNetworkCountByFilter(region, zone, domainId, tristate.None, "")
+func getNetworkCount(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone) (int, error) {
+	return getNetworkCountByFilter(ownerId, scope, region, zone, tristate.None, "")
 }
 
-func getNetworkPublicCount(region *SCloudregion, zone *SZone, domainId, serverType string) (int, error) {
-	return getNetworkCountByFilter(region, zone, domainId, tristate.True, serverType)
+func getAutoAllocNetworkCount(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone, serverType string) (int, error) {
+	return getNetworkCountByFilter(ownerId, scope, region, zone, tristate.True, serverType)
 }
 
-func getNetworkCountByFilter(region *SCloudregion, zone *SZone, domainId string, isPublic tristate.TriState, serverType string) (int, error) {
+func getNetworkCountByFilter(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone, isAutoAlloc tristate.TriState, serverType string) (int, error) {
 	if zone != nil && region == nil {
 		region = zone.GetRegion()
 	}
 
-	/*vpcQuery := VpcManager.Query()
-	if len(domainId) > 0 {
-		ownerId := &db.SOwnerId{DomainId: domainId}
-		vpcQuery = VpcManager.FilterByOwner(vpcQuery, ownerId, rbacutils.ScopeDomain)
-	}
-	vpcs := vpcQuery.SubQuery()*/
-
-	wireQuery := WireManager.Query()
-	if len(domainId) > 0 {
-		ownerId := &db.SOwnerId{DomainId: domainId}
-		wireQuery = WireManager.FilterByOwner(wireQuery, ownerId, rbacutils.ScopeDomain)
-	}
-	wires := wireQuery.SubQuery()
-
 	networks := NetworkManager.Query().SubQuery()
 
 	q := networks.Query()
-	if !isPublic.IsNone() {
-		if isPublic.IsTrue() {
-			q = q.IsTrue("is_public")
-		} else {
-			q = q.IsFalse("is_public")
-		}
-	}
-	q = q.Join(wires, sqlchemy.Equals(networks.Field("wire_id"), wires.Field("id")))
 
-	if region != nil {
+	if zone != nil && !utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
+		wires := WireManager.Query("id").Equals("zone_id", zone.Id)
+		q = q.In("wire_id", wires.SubQuery())
+	} else if region != nil {
 		if utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
 			wires := WireManager.Query().SubQuery()
 			vpcs := VpcManager.Query().SubQuery()
@@ -610,28 +641,18 @@ func getNetworkCountByFilter(region *SCloudregion, zone *SZone, domainId string,
 			q = q.Filter(sqlchemy.In(q.Field("wire_id"), subq))
 		} else {
 			subq := getRegionZoneSubq(region)
-			q = q.Filter(sqlchemy.In(wires.Field("zone_id"), subq))
+			wires := WireManager.Query("id").In("zone_id", subq)
+			q = q.In("wire_id", wires.SubQuery())
 		}
 	}
-	if zone != nil && !utils.IsInStringArray(region.Provider, api.REGIONAL_NETWORK_PROVIDERS) {
-		q = q.Filter(sqlchemy.Equals(wires.Field("zone_id"), zone.Id))
-	}
-	if len(domainId) > 0 {
-		ownerId := &db.SOwnerId{DomainId: domainId}
-		q = NetworkManager.FilterByOwner(q, ownerId, rbacutils.ScopeDomain)
-		/*subq := getDomainManagerSubq(domainId)
-		q = q.Join(vpcs, sqlchemy.Equals(wires.Field("vpc_id"), vpcs.Field("id")))
-		q = q.Filter(sqlchemy.OR(
-			sqlchemy.In(vpcs.Field("manager_id"), subq),
-			sqlchemy.IsNullOrEmpty(vpcs.Field("manager_id")),
-		))
-		if isPublic.Bool() {
-			q = q.Filter(sqlchemy.OR(
-				sqlchemy.Equals(q.Field("public_scope"), rbacutils.ScopeSystem),
-				sqlchemy.AND(
-					sqlchemy.Equals(q.Field("public_scope"), rbacutils.ScopeDomain),
-					sqlchemy.Equals(q.Field("domain_id"), domainId))))
-		}*/
+
+	q = NetworkManager.FilterByOwner(q, ownerId, scope)
+	if !isAutoAlloc.IsNone() {
+		if isAutoAlloc.IsTrue() {
+			q = q.IsTrue("is_auto_alloc")
+		} else {
+			q = q.IsFalse("is_auto_alloc")
+		}
 	}
 	if len(serverType) > 0 {
 		q = q.Filter(sqlchemy.Equals(networks.Field("server_type"), serverType))
@@ -685,8 +706,8 @@ func getMaxDataDiskCount(region *SCloudregion, zone *SZone) int {
 	return 0
 }
 
-func isUsable(region *SCloudregion, zone *SZone, domainId string) bool {
-	cnt, err := getNetworkCount(region, zone, domainId)
+func isUsable(ownerId mcclient.IIdentityProvider, scope rbacutils.TRbacScope, region *SCloudregion, zone *SZone) bool {
+	cnt, err := getNetworkCount(ownerId, scope, region, zone)
 	if err != nil {
 		return false
 	}

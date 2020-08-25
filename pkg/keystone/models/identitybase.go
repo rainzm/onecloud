@@ -32,6 +32,7 @@ import (
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
 
+// +onecloud:swagger-gen-ignore
 type IIdentityModelManager interface {
 	db.IStandaloneModelManager
 
@@ -46,6 +47,7 @@ type IIdentityModel interface {
 	GetIIdentityModel() IIdentityModel
 }
 
+// +onecloud:swagger-gen-ignore
 type SIdentityBaseResourceManager struct {
 	db.SStandaloneResourceBaseManager
 	db.SDomainizedResourceBaseManager
@@ -65,6 +67,7 @@ type SIdentityBaseResource struct {
 	// DomainId string `width:"64" charset:"ascii" default:"default" nullable:"false" index:"true" list:"user"`
 }
 
+// +onecloud:swagger-gen-ignore
 type SEnabledIdentityBaseResourceManager struct {
 	SIdentityBaseResourceManager
 }
@@ -128,11 +131,11 @@ func (manager *SIdentityBaseResourceManager) ListItemFilter(
 		return nil, errors.Wrap(err, "SStandaloneResourceBaseManager.ListItemFilter")
 	}
 	// override manager.SDomainizedResourceBaseManager.ListItemFilter()
-	if len(query.ProjectDomains) > 0 {
+	if len(query.ProjectDomainIds) > 0 {
 		domains := DomainManager.Query().SubQuery()
 		subq := domains.Query(domains.Field("id")).Filter(sqlchemy.OR(
-			sqlchemy.In(domains.Field("id"), query.ProjectDomains),
-			sqlchemy.In(domains.Field("name"), query.ProjectDomains),
+			sqlchemy.In(domains.Field("id"), query.ProjectDomainIds),
+			sqlchemy.In(domains.Field("name"), query.ProjectDomainIds),
 		))
 		q = q.In("domain_id", subq.SubQuery())
 	}

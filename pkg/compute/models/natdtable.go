@@ -141,7 +141,7 @@ func (man *SNatDEntryManager) ValidateCreateData(ctx context.Context, userCred m
 	// check ip + port
 	eip, err := man.checkIPPort(input)
 	if err != nil {
-		return nil, httperrors.NewInputParameterError(err.Error())
+		return nil, httperrors.NewInputParameterError("%v", err)
 	}
 
 	// check that eip is suitable
@@ -237,6 +237,14 @@ func (manager *SNatDEntryManager) SyncNatDTable(ctx context.Context, userCred mc
 	return result
 }
 
+func (self *SNatDEntry) GetCloudproviderId() string {
+	nat, _ := self.GetNatgateway()
+	if nat != nil {
+		return nat.GetCloudproviderId()
+	}
+	return ""
+}
+
 func (self *SNatDEntry) syncRemoveCloudNatDTable(ctx context.Context, userCred mcclient.TokenCredential) error {
 	lockman.LockObject(ctx, self)
 	defer lockman.ReleaseObject(ctx, self)
@@ -283,7 +291,7 @@ func (manager *SNatDEntryManager) newFromCloudNatDTable(ctx context.Context, use
 	table.InternalPort = extEntry.GetInternalPort()
 	table.IpProtocol = extEntry.GetIpProtocol()
 
-	err := manager.TableSpec().Insert(&table)
+	err := manager.TableSpec().Insert(ctx, &table)
 	if err != nil {
 		log.Errorf("newFromCloudNatDTable fail %s", err)
 		return nil, err

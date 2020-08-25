@@ -66,7 +66,6 @@ type KubeClusterCreateOptions struct {
 
 type KubeClusterImportOptions struct {
 	NAME       string `help:"Name of cluster"`
-	APISERVER  string `help:"API server of this cluster"`
 	KUBECONFIG string `help:"Cluster kubeconfig file path"`
 }
 
@@ -163,7 +162,6 @@ func (o KubeClusterImportOptions) Params() (*jsonutils.JSONDict, error) {
 	params := jsonutils.NewDict()
 	params.Add(jsonutils.NewString(o.NAME), "name")
 	params.Add(jsonutils.NewString("import"), "mode")
-	params.Add(jsonutils.NewString(o.APISERVER), "api_server")
 	params.Add(jsonutils.NewString(string(kubeconfig)), "kubeconfig")
 	params.Add(jsonutils.NewString("external"), "provider")
 	params.Add(jsonutils.NewString("unknown"), "resource_type")
@@ -172,6 +170,19 @@ func (o KubeClusterImportOptions) Params() (*jsonutils.JSONDict, error) {
 
 type IdentOptions struct {
 	ID string `help:"ID or name of the model"`
+}
+
+type ClusterSyncOptions struct {
+	IdentOptions
+	Force bool `help:"force sync"`
+}
+
+func (o ClusterSyncOptions) Params() (*jsonutils.JSONDict, error) {
+	param := jsonutils.NewDict()
+	if o.Force {
+		param.Add(jsonutils.JSONTrue, "force")
+	}
+	return param, nil
 }
 
 type ClusterK8sVersions struct {

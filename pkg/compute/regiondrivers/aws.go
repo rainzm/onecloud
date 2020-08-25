@@ -24,6 +24,7 @@ import (
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/secrules"
 	"yunion.io/x/pkg/utils"
 	"yunion.io/x/sqlchemy"
 
@@ -48,6 +49,30 @@ type SAwsRegionDriver struct {
 func init() {
 	driver := SAwsRegionDriver{}
 	models.RegisterRegionDriver(&driver)
+}
+
+func (self *SAwsRegionDriver) GetSecurityGroupRuleOrder() cloudprovider.TPriorityOrder {
+	return cloudprovider.PriorityOrderByAsc
+}
+
+func (self *SAwsRegionDriver) GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("in:deny any")}
+}
+
+func (self *SAwsRegionDriver) GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("out:allow any")}
+}
+
+func (self *SAwsRegionDriver) GetSecurityGroupRuleMaxPriority() int {
+	return 0
+}
+
+func (self *SAwsRegionDriver) GetSecurityGroupRuleMinPriority() int {
+	return 0
+}
+
+func (self *SAwsRegionDriver) IsOnlySupportAllowRules() bool {
+	return true
 }
 
 func (self *SAwsRegionDriver) GetProvider() string {
@@ -543,12 +568,11 @@ func (self *SAwsRegionDriver) validateUpdateNetworkListenerData(ctx context.Cont
 
 func (self *SAwsRegionDriver) ValidateUpdateLoadbalancerListenerData(ctx context.Context, userCred mcclient.TokenCredential, data *jsonutils.JSONDict, lblis *models.SLoadbalancerListener, backendGroup db.IModel) (*jsonutils.JSONDict, error) {
 	ownerId := lblis.GetOwnerId()
-	lbV := validators.NewModelIdOrNameValidator("loadbalancer", "loadbalancer", ownerId)
-	if err := lbV.Validate(data); err != nil {
-		return nil, err
+	lb := lblis.GetLoadbalancer()
+	if lb == nil {
+		return nil, httperrors.NewResourceNotFoundError("loadbalancer listener %s related loadbalancer %s not found", lblis.Id, lblis.LoadbalancerId)
 	}
 
-	lb := lbV.Model.(*models.SLoadbalancer)
 	if lb.LoadbalancerSpec == api.LB_AWS_SPEC_APPLICATION {
 		if _, err := self.validateUpdateApplicationListenerData(ctx, ownerId, lb, lblis, backendGroup, data); err != nil {
 			return nil, err
@@ -802,7 +826,7 @@ func (self *SAwsRegionDriver) createLoadbalancerBackendGroup(ctx context.Context
 	cachedLbbg.HealthCheckProtocol = lblis.HealthCheckType
 	cachedLbbg.HealthCheckInterval = lblis.HealthCheckInterval
 
-	err = models.AwsCachedLbbgManager.TableSpec().Insert(cachedLbbg)
+	err = models.AwsCachedLbbgManager.TableSpec().Insert(ctx, cachedLbbg)
 	if err != nil {
 		return nil, errors.Wrap(err, "AwsRegionDriver.createlbBackendgroup.Insert")
 	}
@@ -915,7 +939,7 @@ func (self *SAwsRegionDriver) RequestCreateLoadbalancerBackend(ctx context.Conte
 		}
 
 		if ibackend != nil {
-			if err := lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, ibackend, nil, lb.GetCloudprovider()); err != nil {
+			if err := lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, ibackend, lbbg.GetOwnerId(), lb.GetCloudprovider()); err != nil {
 				return nil, errors.Wrap(err, "AwsRegionDriver.RequestCreateLoadbalancerBackend.SyncWithCloudLoadbalancerBackend")
 			}
 		}
@@ -1128,7 +1152,7 @@ func (self *SAwsRegionDriver) RequestCreateLoadbalancerListenerRule(ctx context.
 		if err := db.SetExternalId(lbr, userCred, iListenerRule.GetGlobalId()); err != nil {
 			return nil, err
 		}
-		return nil, lbr.SyncWithCloudLoadbalancerListenerRule(ctx, userCred, iListenerRule, nil, loadbalancer.GetCloudprovider())
+		return nil, lbr.SyncWithCloudLoadbalancerListenerRule(ctx, userCred, iListenerRule, listener.GetOwnerId(), loadbalancer.GetCloudprovider())
 	})
 	return nil
 }
@@ -1149,7 +1173,7 @@ func (self *SAwsRegionDriver) RequestDeleteLoadbalancerBackendGroup(ctx context.
 		}
 		iLoadbalancer, err := iRegion.GetILoadBalancerById(loadbalancer.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, errors.Wrap(err, "AwsRegionDriver.RequestDeleteLoadbalancerBackendGroup.GetILoadBalancerById")
@@ -1168,7 +1192,7 @@ func (self *SAwsRegionDriver) RequestDeleteLoadbalancerBackendGroup(ctx context.
 
 			iLoadbalancerBackendGroup, err := iLoadbalancer.GetILoadBalancerBackendGroupById(cachedLbbg.ExternalId)
 			if err != nil {
-				if err == cloudprovider.ErrNotFound {
+				if errors.Cause(err) == cloudprovider.ErrNotFound {
 					return nil, nil
 				}
 				return nil, errors.Wrap(err, "AwsRegionDriver.RequestDeleteLoadbalancerBackendGroup.GetILoadBalancerBackendGroupById")
@@ -1207,7 +1231,7 @@ func (self *SAwsRegionDriver) RequestDeleteLoadbalancer(ctx context.Context, use
 
 		iLoadbalancer, err := iRegion.GetILoadBalancerById(lb.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, errors.Wrap(err, "AwsRegionDriver.RequestDeleteLoadbalancer.GetILoadBalancerById")
@@ -1235,7 +1259,7 @@ func (self *SAwsRegionDriver) RequestDeleteLoadbalancer(ctx context.Context, use
 
 				iLoadbalancerBackendGroup, err := iLoadbalancer.GetILoadBalancerBackendGroupById(cachedLbbg.ExternalId)
 				if err != nil {
-					if err == cloudprovider.ErrNotFound {
+					if errors.Cause(err) == cloudprovider.ErrNotFound {
 						return nil, nil
 					}
 					return nil, errors.Wrap(err, "AwsRegionDriver.RequestDeleteLoadbalancerBackendGroup.GetILoadBalancerBackendGroupById")
@@ -1356,7 +1380,7 @@ func (self *SAwsRegionDriver) RequestSyncLoadbalancerListener(ctx context.Contex
 		if err := iListener.Refresh(); err != nil {
 			return nil, errors.Wrap(err, "awsRegionDriver.RequestSyncLoadbalancerListener.Refresh")
 		}
-		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, nil, loadbalancer.GetCloudprovider())
+		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, loadbalancer.GetOwnerId(), loadbalancer.GetCloudprovider())
 	})
 	return nil
 }

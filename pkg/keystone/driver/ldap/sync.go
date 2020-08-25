@@ -22,7 +22,6 @@ import (
 
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
-	"yunion.io/x/pkg/tristate"
 
 	api "yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/keystone/models"
@@ -166,7 +165,7 @@ func (self *SLDAPDriver) syncDomainInfo(ctx context.Context, info SDomainInfo) (
 	if err != nil {
 		return nil, errors.Wrap(err, "self.GetIdentityProvider")
 	}
-	return idp.SyncOrCreateDomain(ctx, info.Id, info.Name, info.DN)
+	return idp.SyncOrCreateDomain(ctx, info.Id, info.Name, info.DN, true)
 }
 
 func (self *SLDAPDriver) syncUsers(ctx context.Context, cli *ldaputils.SLDAPClient, domainId string, baseDN string) (map[string]string, error) {
@@ -230,19 +229,20 @@ func (self *SLDAPDriver) syncUserDB(ctx context.Context, ui SUserInfo, domainId 
 	if err != nil {
 		return "", errors.Wrap(err, "models.IdentityProviderManager.FetchIdentityProviderById")
 	}
-	usr, err := idp.SyncOrCreateUser(ctx, ui.Id, ui.Name, domainId, func(user *models.SUser) {
-		if ui.Enabled {
-			user.Enabled = tristate.True
-		} else {
-			user.Enabled = tristate.False
-		}
-		if val, ok := ui.Extra["email"]; ok && len(val) > 0 {
+	usr, err := idp.SyncOrCreateUser(ctx, ui.Id, ui.Name, domainId, !self.ldapConfig.DisableUserOnImport, func(user *models.SUser) {
+		// LDAP user is always enabled
+		// if ui.Enabled {
+		// 	user.Enabled = tristate.True
+		// } else {
+		//	user.Enabled = tristate.False
+		// }
+		if val, ok := ui.Extra["email"]; ok && len(val) > 0 && len(user.Email) > 0 {
 			user.Email = val
 		}
-		if val, ok := ui.Extra["displayname"]; ok && len(val) > 0 {
+		if val, ok := ui.Extra["displayname"]; ok && len(val) > 0 && len(user.Displayname) > 0 {
 			user.Displayname = val
 		}
-		if val, ok := ui.Extra["mobile"]; ok && len(val) > 0 {
+		if val, ok := ui.Extra["mobile"]; ok && len(val) > 0 && len(user.Mobile) > 0 {
 			user.Mobile = val
 		}
 	})

@@ -17,6 +17,7 @@ package models
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -29,6 +30,7 @@ import (
 	computeapis "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/cmdline"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -79,6 +81,8 @@ type SGuestTemplate struct {
 
 	// 其他配置信息
 	Content jsonutils.JSONObject `nullable:"false" list:"user" update:"user" create:"optional" json:"content"`
+
+	LastCheckTime time.Time
 }
 
 var GuestTemplateManager *SGuestTemplateManager
@@ -124,8 +128,17 @@ func (gtm *SGuestTemplateManager) ValidateCreateData(
 
 func (gt *SGuestTemplate) PostCreate(ctx context.Context, userCred mcclient.TokenCredential,
 	ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) {
-	gt.SetStatus(userCred, "ready", "")
+	gt.SetStatus(userCred, computeapis.GT_READY, "")
+	gt.updateCheckTime()
 	logclient.AddActionLogWithContext(ctx, gt, logclient.ACT_CREATE, nil, userCred, true)
+}
+
+func (gt *SGuestTemplate) updateCheckTime() error {
+	_, err := db.Update(gt, func() error {
+		gt.LastCheckTime = time.Now()
+		return nil
+	})
+	return err
 }
 
 func (gt *SGuestTemplate) PostUpdate(ctx context.Context, userCred mcclient.TokenCredential,
@@ -179,6 +192,23 @@ func Brand2Hypervisor(brand string) string {
 	return hypervisor
 }
 
+func (gtm *SGuestTemplateManager) validateContent(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, content *jsonutils.JSONDict) (*computeapis.ServerCreateInput, error) {
+	input, err := GuestManager.validateCreateData(ctx, userCred, ownerId, query, content)
+	if err != nil {
+		return nil, httperrors.NewInputParameterError("%v", err)
+	}
+	// check Image
+	imageId := input.Disks[0].ImageId
+	image, err := CachedimageManager.getImageInfo(ctx, userCred, imageId, true)
+	if err != nil {
+		return nil, errors.Wrapf(err, "getImageInfo of '%s'", imageId)
+	}
+	if image == nil {
+		return nil, fmt.Errorf("no such image %s", imageId)
+	}
+	return input, nil
+}
+
 func (gtm *SGuestTemplateManager) validateData(
 	ctx context.Context,
 	userCred mcclient.TokenCredential,
@@ -198,9 +228,9 @@ func (gtm *SGuestTemplateManager) validateData(
 	}
 	// I don't hope cinput.Content same with data["content"] will change in GuestManager.validateCreateData
 	copy := jsonutils.DeepCopy(content).(*jsonutils.JSONDict)
-	input, err := GuestManager.validateCreateData(ctx, userCred, ownerId, query, copy)
+	input, err := gtm.validateContent(ctx, userCred, ownerId, query, copy)
 	if err != nil {
-		return cinput, httperrors.NewInputParameterError(err.Error())
+		return cinput, httperrors.NewInputParameterError("%v", err)
 	}
 	log.Debugf("data: %#v", input)
 	// fill field
@@ -315,24 +345,18 @@ func (gt *SGuestTemplate) getMoreDetails(ctx context.Context, userCred mcclient.
 		return out, err
 	}
 	configInfo := computeapis.GuestTemplateConfigInfo{}
-	if len(input.PreferRegion) != 0 {
-		region := CloudregionManager.FetchRegionById(input.PreferRegion)
-		if region != nil {
-			input.PreferRegion = region.GetName()
-		}
-		configInfo.Region = input.PreferRegion
-
-	}
 	if len(input.PreferZone) != 0 {
 		zone := ZoneManager.FetchZoneById(input.PreferZone)
 		if zone != nil {
 			input.PreferZone = zone.GetName()
+			out.ZoneId = zone.GetId()
 		}
 		out.Zone = input.PreferZone
-		configInfo.Zone = input.PreferZone
 	}
-	configInfo.Hypervisor = gt.Hypervisor
 	out.Brand = Hypervisor2Brand(gt.Hypervisor)
+
+	// metadata
+	configInfo.Metadata = input.Metadata
 
 	// sku deal
 	if len(input.InstanceType) > 0 {
@@ -366,8 +390,8 @@ func (gt *SGuestTemplate) getMoreDetails(ctx context.Context, userCred mcclient.
 	configInfo.Disks = disks
 
 	// keypair
-	if len(input.Keypair) > 0 {
-		model, err := KeypairManager.FetchByIdOrName(userCred, input.Keypair)
+	if len(input.KeypairId) > 0 {
+		model, err := KeypairManager.FetchByIdOrName(userCred, input.KeypairId)
 		if err == nil {
 			keypair := model.(*SKeypair)
 			configInfo.Keypair = keypair.GetName()
@@ -482,7 +506,7 @@ func (gt *SGuestTemplate) PerformPublic(
 
 	// check for below private resource in the guest template
 	privateResource := map[string]int{
-		"keypair":           len(input.Keypair),
+		"keypair":           len(input.KeypairId),
 		"instance group":    len(input.InstanceGroupIds),
 		"instance snapshot": len(input.InstanceSnapshotId),
 	}
@@ -558,16 +582,22 @@ func (gt *SGuestTemplate) PerformPublic(
 }
 
 func (gt *SGuestTemplate) genForbiddenError(resourceName, resourceStr, scope string) error {
-	var msg string
-	if len(resourceStr) == 0 {
-		msg = fmt.Sprintf("the %s in guest template is not a public resource", resourceName)
+	var (
+		msgFmt  string
+		msgArgs []interface{}
+	)
+	if resourceStr == "" {
+		msgFmt = "the %s in guest template is not a public resource"
+		msgArgs = []interface{}{resourceName}
 	} else {
-		msg = fmt.Sprintf("the %s '%s' in guest template is not a public resource", resourceName, resourceStr)
+		msgFmt = "the %s %q in guest template is not a public resource"
+		msgArgs = []interface{}{resourceName, resourceStr}
 	}
-	if len(scope) > 0 {
-		msg += fmt.Sprintf(" in %s scope", scope)
+	if scope != "" {
+		msgFmt += " in %s scope"
+		msgArgs = append(msgArgs, scope)
 	}
-	return httperrors.NewForbiddenError(msg)
+	return httperrors.NewForbiddenError(msgFmt, msgArgs...)
 }
 
 func (gt *SGuestTemplate) ValidateDeleteCondition(ctx context.Context) error {
@@ -610,7 +640,7 @@ func (manager *SGuestTemplateManager) ListItemFilter(
 	if err != nil {
 		return nil, errors.Wrap(err, "SCloudregionResourceBaseManager.ListItemFilter")
 	}
-	if len(input.Vpc) > 0 {
+	if len(input.VpcId) > 0 {
 		q, err = manager.SVpcResourceBaseManager.ListItemFilter(ctx, q, userCred, input.VpcFilterListInput)
 		if err != nil {
 			return nil, errors.Wrap(err, "SVpcResourceBaseManager.ListItemFilter")
@@ -687,7 +717,7 @@ func (gt *SGuestTemplate) Validate(ctx context.Context, userCred mcclient.TokenC
 	}
 
 	// check networks
-	input, err := GuestManager.validateCreateData(ctx, userCred, ownerId, jsonutils.NewDict(), gt.Content.(*jsonutils.JSONDict))
+	input, err := GuestTemplateManager.validateContent(ctx, userCred, ownerId, jsonutils.NewDict(), gt.Content.(*jsonutils.JSONDict))
 	if err != nil {
 		return false, err.Error()
 	}
@@ -726,4 +756,64 @@ func (manager *SGuestTemplateManager) ListItemExportKeys(ctx context.Context,
 	}
 
 	return q, nil
+}
+
+func (g *SGuest) AllowPerformSaveTemplate(ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject) bool {
+	return g.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, g, "")
+}
+
+func (g *SGuest) PerformSaveTemplate(ctx context.Context, userCred mcclient.TokenCredential,
+	query jsonutils.JSONObject, input computeapis.GuestSaveToTemplateInput) (jsonutils.JSONObject, error) {
+	g.SetStatus(userCred, computeapis.VM_TEMPLATE_SAVING, "save to template")
+
+	if len(input.Name) == 0 && len(input.GenerateName) == 0 {
+		input.GenerateName = fmt.Sprintf("%s-template", g.Name)
+	}
+	data := jsonutils.Marshal(input).(*jsonutils.JSONDict)
+	if task, err := taskman.TaskManager.NewTask(ctx, "GuestSaveTemplateTask", g, userCred, data, "", "", nil); err != nil {
+		return nil, errors.Wrap(err, "Unbale to init 'GuestSaveTemplateTask'")
+	} else {
+		task.ScheduleRun(nil)
+	}
+	return nil, nil
+}
+
+func (gt *SGuestTemplate) AllowPerformInspect(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) bool {
+	return gt.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, gt, "inspect")
+}
+
+func (gt *SGuestTemplate) PerformInspect(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, data jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+	return nil, gt.inspect(ctx, userCred)
+}
+
+func (gt *SGuestTemplate) inspect(ctx context.Context, userCred mcclient.TokenCredential) error {
+	_, err := GuestTemplateManager.validateContent(ctx, userCred, gt.GetOwnerId(), jsonutils.NewDict(), gt.Content.(*jsonutils.JSONDict))
+	if err == nil {
+		gt.updateCheckTime()
+		logclient.AddSimpleActionLog(gt, logclient.ACT_HEALTH_CHECK, "", userCred, true)
+		return nil
+	}
+	// invalid
+	gt.updateCheckTime()
+	reason := fmt.Sprintf("During the inspection, the guest template is not available: %s", err.Error())
+	gt.SetStatus(userCred, computeapis.GT_INVALID, reason)
+	logclient.AddSimpleActionLog(gt, logclient.ACT_HEALTH_CHECK, reason, userCred, false)
+	return nil
+}
+
+func (gm *SGuestTemplateManager) InspectAllTemplate(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	lastCheckTime := time.Now().Add(time.Duration(-options.Options.GuestTemplateCheckInterval) * time.Hour)
+	q := gm.Query().Equals("status", computeapis.GT_READY)
+	q = q.Filter(sqlchemy.OR(sqlchemy.IsNull(q.Field("last_check_time")), sqlchemy.LE(q.Field("last_check_time"),
+		lastCheckTime)))
+	gts := make([]SGuestTemplate, 0, 10)
+	err := db.FetchModelObjects(gm, q, &gts)
+	if err != nil {
+		log.Errorf("Unable to fetch all guest templates that need to check: %s", err.Error())
+		return
+	}
+	for i := range gts {
+		gts[i].inspect(ctx, userCred)
+	}
 }

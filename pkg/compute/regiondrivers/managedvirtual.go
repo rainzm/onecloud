@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +39,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/rand"
+	"yunion.io/x/onecloud/pkg/util/rbacutils"
 )
 
 type SManagedVirtualizationRegionDriver struct {
@@ -108,6 +108,10 @@ func (self *SManagedVirtualizationRegionDriver) ValidateCreateLoadbalancerBacken
 	return data, nil
 }
 
+func (self *SManagedVirtualizationRegionDriver) IsSupportLoadbalancerListenerRuleRedirect() bool {
+	return false
+}
+
 func (self *SManagedVirtualizationRegionDriver) ValidateCreateLoadbalancerListenerRuleData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, data *jsonutils.JSONDict, backendGroup db.IModel) (*jsonutils.JSONDict, error) {
 	return data, nil
 }
@@ -165,10 +169,18 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateLoadbalancer(ctx co
 		if err != nil {
 			return nil, err
 		}
+
 		params, err := lb.GetCreateLoadbalancerParams(iRegion)
 		if err != nil {
 			return nil, err
 		}
+
+		_cloudprovider := lb.GetCloudprovider()
+		params.ProjectId, err = _cloudprovider.SyncProject(ctx, userCred, lb.ProjectId)
+		if err != nil {
+			log.Errorf("failed to sync project %s for create %s lb %s error: %v", lb.ProjectId, _cloudprovider.Provider, lb.Name, err)
+		}
+
 		iLoadbalancer, err := iRegion.CreateILoadBalancer(params)
 		if err != nil {
 			return nil, err
@@ -269,7 +281,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancer(ctx co
 		}
 		iLoadbalancer, err := iRegion.GetILoadBalancerById(lb.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, err
@@ -375,7 +387,7 @@ func (self *SManagedVirtualizationRegionDriver) deleteLoadbalancerAcl(ctx contex
 
 	iLoadbalancerAcl, err := iRegion.GetILoadBalancerAclById(lbacl.ExternalId)
 	if err != nil {
-		if err == cloudprovider.ErrNotFound {
+		if errors.Cause(err) == cloudprovider.ErrNotFound {
 			return nil, nil
 		}
 		return nil, err
@@ -448,7 +460,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancerCertifi
 		}
 		iLoadbalancerCert, err := iRegion.GetILoadBalancerCertificateById(lbcert.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, err
@@ -515,7 +527,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancerBackend
 		}
 		iLoadbalancer, err := iRegion.GetILoadBalancerById(loadbalancer.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, err
@@ -527,7 +539,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancerBackend
 
 		iLoadbalancerBackendGroup, err := iLoadbalancer.GetILoadBalancerBackendGroupById(lbbg.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, err
@@ -590,7 +602,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateLoadbalancerBackend
 		if err := db.SetExternalId(lbb, userCred, iLoadbalancerBackend.GetGlobalId()); err != nil {
 			return nil, err
 		}
-		return nil, lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, iLoadbalancerBackend, nil, lb.GetCloudprovider())
+		return nil, lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, iLoadbalancerBackend, lbbg.GetOwnerId(), lb.GetCloudprovider())
 	})
 	return nil
 }
@@ -627,7 +639,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancerBackend
 		}
 		_, err = guest.GetIVM()
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, err
@@ -675,7 +687,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncLoadbalancerBackend(c
 			return nil, errors.Wrap(err, "regionDriver.RequestSyncLoadbalancerBackend.GetILoadbalancerBackendById")
 		}
 
-		return nil, lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, iBackend, nil, lb.GetCloudprovider())
+		return nil, lbb.SyncWithCloudLoadbalancerBackend(ctx, userCred, iBackend, lbbg.GetOwnerId(), lb.GetCloudprovider())
 	})
 	return nil
 }
@@ -775,7 +787,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateLoadbalancerListene
 		if err := db.SetExternalId(lblis, userCred, iListener.GetGlobalId()); err != nil {
 			return nil, errors.Wrap(err, "db.SetExternalId")
 		}
-		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, nil, lblis.GetCloudprovider())
+		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, loadbalancer.GetOwnerId(), lblis.GetCloudprovider())
 	})
 	return nil
 }
@@ -800,7 +812,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancerListene
 
 		iLoadbalancer, err := iRegion.GetILoadBalancerById(loadbalancer.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, errors.Wrap(err, "RegionDriver.RequestDeleteLoadbalancerListener.GetILoadBalancerById")
@@ -808,7 +820,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancerListene
 
 		iListener, err := iLoadbalancer.GetILoadBalancerListenerById(lblis.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, errors.Wrap(err, "RegionDriver.RequestDeleteLoadbalancerListener.GetILoadBalancerListenerById")
@@ -946,7 +958,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncLoadbalancerListener(
 		if err := iListener.Refresh(); err != nil {
 			return nil, errors.Wrap(err, "regionDriver.RequestSyncLoadbalancerListener.RefreshListener")
 		}
-		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, nil, lblis.GetCloudprovider())
+		return nil, lblis.SyncWithCloudLoadbalancerListener(ctx, userCred, loadbalancer, iListener, loadbalancer.GetOwnerId(), lblis.GetCloudprovider())
 	})
 	return nil
 }
@@ -1043,7 +1055,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateLoadbalancerListene
 		if err := db.SetExternalId(lbr, userCred, iListenerRule.GetGlobalId()); err != nil {
 			return nil, err
 		}
-		return nil, lbr.SyncWithCloudLoadbalancerListenerRule(ctx, userCred, iListenerRule, nil, loadbalancer.GetCloudprovider())
+		return nil, lbr.SyncWithCloudLoadbalancerListenerRule(ctx, userCred, iListenerRule, listener.GetOwnerId(), loadbalancer.GetCloudprovider())
 	})
 	return nil
 }
@@ -1078,7 +1090,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteLoadbalancerListene
 		}
 		iListenerRule, err := iListener.GetILoadBalancerListenerRuleById(lbr.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, err
@@ -1223,7 +1235,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestCancelSnapshotPolicy(ctx 
 		data := jsonutils.NewDict()
 		data.Add(jsonutils.NewString(sp.GetId()), "snapshotpolicy_id")
 		err = iRegion.CancelSnapshotPolicyToDisks(spcache.GetExternalId(), disk.GetExternalId())
-		if err == cloudprovider.ErrNotFound {
+		if errors.Cause(err) == cloudprovider.ErrNotFound {
 			return data, nil
 		}
 		if err != nil {
@@ -1246,7 +1258,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteSnapshot(ctx contex
 		}
 		cloudSnapshot, err := cloudRegion.GetISnapshotById(snapshot.ExternalId)
 		if err != nil {
-			if err == cloudprovider.ErrNotFound {
+			if errors.Cause(err) == cloudprovider.ErrNotFound {
 				return nil, nil
 			}
 			return nil, err
@@ -1450,7 +1462,7 @@ func (self *SManagedVirtualizationRegionDriver) GetSecurityGroupVpcId(ctx contex
 	return region.GetDriver().GetDefaultSecurityGroupVpcId(), nil
 }
 
-func (self *SManagedVirtualizationRegionDriver) RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *models.SVpc, secgroup *models.SSecurityGroup) (string, error) {
+func (self *SManagedVirtualizationRegionDriver) RequestSyncSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, vpcId string, vpc *models.SVpc, secgroup *models.SSecurityGroup, remoteProjectId string) (string, error) {
 	lockman.LockRawObject(ctx, "secgroupcache", fmt.Sprintf("%s-%s-%s", secgroup.Id, vpcId, vpc.ManagerId))
 	defer lockman.ReleaseRawObject(ctx, "secgroupcache", fmt.Sprintf("%s-%s-%s", secgroup.Id, vpcId, vpc.ManagerId))
 
@@ -1459,7 +1471,11 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncSecurityGroup(ctx con
 		return "", errors.Wrap(err, "vpc.GetRegon")
 	}
 
-	cache, err := models.SecurityGroupCacheManager.Register(ctx, userCred, secgroup.Id, vpcId, region.Id, vpc.ManagerId)
+	if region.GetDriver().GetSecurityGroupPublicScope() == rbacutils.ScopeSystem {
+		remoteProjectId = ""
+	}
+
+	cache, err := models.SecurityGroupCacheManager.Register(ctx, userCred, secgroup.Id, vpcId, region.Id, vpc.ManagerId, remoteProjectId)
 	if err != nil {
 		return "", errors.Wrap(err, "SSecurityGroupCache.Register")
 	}
@@ -1473,7 +1489,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncSecurityGroup(ctx con
 	if len(cache.ExternalId) > 0 {
 		iSecgroup, err = iRegion.GetISecurityGroupById(cache.ExternalId)
 		if err != nil {
-			if err != cloudprovider.ErrNotFound {
+			if errors.Cause(err) != cloudprovider.ErrNotFound {
 				return "", errors.Wrap(err, "iRegion.GetSecurityGroupById")
 			}
 			cache.ExternalId = ""
@@ -1488,9 +1504,13 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncSecurityGroup(ctx con
 		randomString := func(prefix string, length int) string {
 			return fmt.Sprintf("%s-%s", prefix, rand.String(length))
 		}
-		groupName := randomString(secgroup.Name, 1)
+		opts := &cloudprovider.SecurityGroupFilterOptions{
+			Name:      randomString(secgroup.Name, 1),
+			VpcId:     vpcId,
+			ProjectId: remoteProjectId,
+		}
 		for i := 2; i < 30; i++ {
-			_, err := iRegion.GetISecurityGroupByName(vpc.ExternalId, groupName)
+			_, err := iRegion.GetISecurityGroupByName(opts)
 			if err != nil {
 				if errors.Cause(err) == cloudprovider.ErrNotFound {
 					break
@@ -1499,13 +1519,14 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncSecurityGroup(ctx con
 					return "", err
 				}
 			}
-			groupName = randomString(secgroup.Name, i)
+			opts.Name = randomString(secgroup.Name, i)
 		}
 		conf := &cloudprovider.SecurityGroupCreateInput{
-			Name:  groupName,
-			Desc:  secgroup.Description,
-			VpcId: vpcId,
-			Rules: secgroup.GetSecRules(""),
+			Name:      opts.Name,
+			Desc:      secgroup.Description,
+			VpcId:     vpcId,
+			ProjectId: remoteProjectId,
+			Rules:     secgroup.GetSecRules(""),
 		}
 		iSecgroup, err = iRegion.CreateISecurityGroup(conf)
 		if err != nil {
@@ -1524,46 +1545,42 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncSecurityGroup(ctx con
 		return "", errors.Wrap(err, "db.Update")
 	}
 
-	inAllowList := secgroup.GetInAllowList()
-	outAllowList := secgroup.GetOutAllowList()
-
 	rules, err := iSecgroup.GetRules()
 	if err != nil {
 		return "", errors.Wrap(err, "iSecgroup.GetRules")
 	}
 
-	inRules := secrules.SecurityRuleSet{}
-	outRules := secrules.SecurityRuleSet{}
-	for i := 0; i < len(rules); i++ {
-		if rules[i].Direction == secrules.DIR_IN {
-			inRules = append(inRules, rules[i])
-		} else {
-			outRules = append(outRules, rules[i])
-		}
-	}
-	sort.Sort(inRules)
-	sort.Sort(outRules)
-	_inAllowList := inRules.AllowList()
-	_outAllowList := outRules.AllowList()
-	if inAllowList.Equals(_inAllowList) && outAllowList.Equals(_outAllowList) {
+	maxPriority := region.GetDriver().GetSecurityGroupRuleMaxPriority()
+	minPriority := region.GetDriver().GetSecurityGroupRuleMinPriority()
+
+	defaultInRule := region.GetDriver().GetDefaultSecurityGroupInRule()
+	defaultOutRule := region.GetDriver().GetDefaultSecurityGroupOutRule()
+	order := region.GetDriver().GetSecurityGroupRuleOrder()
+	onlyAllowRules := region.GetDriver().IsOnlySupportAllowRules()
+
+	localRules := secrules.SecurityRuleSet(secgroup.GetSecRules(""))
+
+	common, inAdds, outAdds, inDels, outDels := cloudprovider.CompareRules(minPriority, maxPriority, order, localRules, rules, defaultInRule, defaultOutRule, onlyAllowRules, false)
+
+	if len(inAdds) == 0 && len(inDels) == 0 && len(outAdds) == 0 && len(outDels) == 0 {
 		return cache.ExternalId, nil
 	}
 
-	err = iSecgroup.SyncRules(secgroup.GetSecRules(""))
+	err = iSecgroup.SyncRules(common, inAdds, outAdds, inDels, outDels)
 	if err != nil {
 		return "", errors.Wrap(err, "iSecgroup.SyncRules")
 	}
+
 	return cache.ExternalId, nil
 }
 
-func (self *SManagedVirtualizationRegionDriver) RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *models.SCloudregion, vpc *models.SVpc, secgroup *models.SSecurityGroup, classic bool, task taskman.ITask) error {
-
+func (self *SManagedVirtualizationRegionDriver) RequestCacheSecurityGroup(ctx context.Context, userCred mcclient.TokenCredential, region *models.SCloudregion, vpc *models.SVpc, secgroup *models.SSecurityGroup, classic bool, removeProjectId string, task taskman.ITask) error {
 	vpcId, err := region.GetDriver().GetSecurityGroupVpcId(ctx, userCred, region, nil, vpc, classic)
 	if err != nil {
 		return errors.Wrap(err, "GetSecurityGroupVpcId")
 	}
 	taskman.LocalTaskRun(task, func() (jsonutils.JSONObject, error) {
-		_, err := self.RequestSyncSecurityGroup(ctx, userCred, vpcId, vpc, secgroup)
+		_, err := self.RequestSyncSecurityGroup(ctx, userCred, vpcId, vpc, secgroup, removeProjectId)
 		return nil, err
 	})
 	return nil
@@ -1573,7 +1590,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateDBInstance(ctx cont
 	taskman.LocalTaskRun(task, func() (jsonutils.JSONObject, error) {
 		iregion, err := dbinstance.GetIRegion()
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "GetIRegionAndProvider")
 		}
 
 		vpc, err := dbinstance.GetVpc()
@@ -1606,6 +1623,12 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateDBInstance(ctx cont
 			Password:      passwd,
 		}
 
+		_cloudprovider := dbinstance.GetCloudprovider()
+		desc.ProjectId, err = _cloudprovider.SyncProject(ctx, userCred, dbinstance.ProjectId)
+		if err != nil {
+			log.Errorf("failed to sync project %s for create %s rds %s error: %v", dbinstance.ProjectId, _cloudprovider.Provider, dbinstance.Name, err)
+		}
+
 		if len(dbinstance.InstanceType) > 0 {
 			desc.ZoneIds, _ = dbinstance.GetAvailableZoneIds()
 		} else {
@@ -1614,7 +1637,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateDBInstance(ctx cont
 
 		region := dbinstance.GetRegion()
 
-		err = region.GetDriver().InitDBInstanceUser(dbinstance, task, &desc)
+		err = region.GetDriver().InitDBInstanceUser(ctx, dbinstance, task, &desc)
 		if err != nil {
 			return nil, err
 		}
@@ -1626,7 +1649,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateDBInstance(ctx cont
 				if err != nil {
 					return nil, errors.Wrap(err, "GetSecurityGroupVpcId")
 				}
-				desc.SecgroupId, err = region.GetDriver().RequestSyncSecurityGroup(ctx, userCred, vpcId, vpc, secgroup)
+				desc.SecgroupId, err = region.GetDriver().RequestSyncSecurityGroup(ctx, userCred, vpcId, vpc, secgroup, desc.ProjectId)
 				if err != nil {
 					return nil, errors.Wrap(err, "SyncSecurityGroup")
 				}
@@ -1742,7 +1765,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestSyncElasticcache(ctx cont
 
 	iec, err := iregion.GetIElasticcacheById(ec.ExternalId)
 	if err != nil {
-		if err == cloudprovider.ErrNotFound {
+		if errors.Cause(err) == cloudprovider.ErrNotFound {
 			ec.SetStatus(userCred, api.ELASTIC_CACHE_STATUS_UNKNOWN, "")
 			return nil
 		}
@@ -1813,7 +1836,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteElasticcache(ctx co
 	}
 
 	iec, err := iregion.GetIElasticcacheById(ec.ExternalId)
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "managedVirtualizationRegionDriver.RequestDeleteElasticcache.GetIElasticcacheById")
@@ -2316,8 +2339,12 @@ func (self *SManagedVirtualizationRegionDriver) RequestCreateDBInstanceBackup(ct
 			backup.BackupSizeMb = iBackup.GetBackupSizeMb()
 			return nil
 		})
+		if err != nil {
+			return nil, errors.Wrap(err, "db.Update")
+		}
 
-		return nil, err
+		instance.SetStatus(userCred, api.DBINSTANCE_RUNNING, "")
+		return nil, nil
 	})
 	return nil
 }
@@ -2386,14 +2413,14 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteElasticcacheAccount
 
 	ec := _ec.(*models.SElasticcache)
 	iec, err := iregion.GetIElasticcacheById(ec.GetExternalId())
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "managedVirtualizationRegionDriver.RequestDeleteElasticcacheAccount.GetIElasticcacheById")
 	}
 
 	iea, err := iec.GetICloudElasticcacheAccount(ea.GetExternalId())
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "managedVirtualizationRegionDriver.RequestDeleteElasticcacheAccount.GetICloudElasticcacheAccount")
@@ -2426,7 +2453,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteElasticcacheAcl(ctx
 	ec := _ec.(*models.SElasticcache)
 
 	iec, err := iregion.GetIElasticcacheById(ec.GetExternalId())
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "managedVirtualizationRegionDriver.RequestDeleteElasticcacheAcl.GetIElasticcacheById")
@@ -2434,7 +2461,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteElasticcacheAcl(ctx
 
 	iea, err := iec.GetICloudElasticcacheAcl(ea.GetExternalId())
 	if err != nil {
-		if err == cloudprovider.ErrNotFound {
+		if errors.Cause(err) == cloudprovider.ErrNotFound {
 			return nil
 		}
 
@@ -2462,7 +2489,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestDeleteElasticcacheBackup(
 
 	ec := _ec.(*models.SElasticcache)
 	iec, err := iregion.GetIElasticcacheById(ec.GetExternalId())
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "managedVirtualizationRegionDriver.RequestDeleteElasticcacheBackup.GetIElasticcacheById")
@@ -2494,7 +2521,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestElasticcacheAccountResetP
 
 	ec := _ec.(*models.SElasticcache)
 	iec, err := iregion.GetIElasticcacheById(ec.GetExternalId())
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "managedVirtualizationRegionDriver.RequestElasticcacheAccountResetPassword.GetIElasticcacheById")
@@ -2574,7 +2601,7 @@ func (self *SManagedVirtualizationRegionDriver) RequestElasticcacheBackupRestore
 
 	ec := _ec.(*models.SElasticcache)
 	iec, err := iregion.GetIElasticcacheById(ec.GetExternalId())
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "managedVirtualizationRegionDriver.RequestElasticcacheBackupRestoreInstance.GetIElasticcacheById")

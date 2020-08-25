@@ -54,6 +54,7 @@ type ImageOptionalOptions struct {
 	Hypervisor         []string `help:"Prefer hypervisor type" choices:"kvm|esxi|baremetal|container|openstack|ctyun"`
 	DiskDriver         string   `help:"Perfer disk driver" choices:"virtio|scsi|pvscsi|ide|sata"`
 	NetDriver          string   `help:"Preferred network driver" choices:"virtio|e1000|vmxnet3"`
+	DisableUsbKbd      bool     `help:"Disable usb keyboard on this image(for hypervisor kvm)"`
 }
 
 func addImageOptionalOptions(s *mcclient.ClientSession, params *jsonutils.JSONDict, args ImageOptionalOptions) error {
@@ -131,6 +132,9 @@ func addImageOptionalOptions(s *mcclient.ClientSession, params *jsonutils.JSONDi
 	if len(args.Hypervisor) > 0 {
 		params.Add(jsonutils.NewString(strings.Join(args.Hypervisor, ",")), "properties", "hypervisor")
 	}
+	if args.DisableUsbKbd {
+		params.Add(jsonutils.NewString("true"), "properties", "disable_usb_kbd")
+	}
 	return nil
 }
 
@@ -143,6 +147,7 @@ func init() {
 		Protected  string   `help:"filter images by protected" choices:"true|false"`
 		IsUefi     bool     `help:"list uefi image"`
 		Format     []string `help:"Disk formats"`
+		SubFormats []string `help:"Sub formats"`
 		Name       string   `help:"Name filter"`
 	}
 	R(&ImageListOptions{}, "image-list", "List images", func(s *mcclient.ClientSession, args *ImageListOptions) error {
@@ -173,15 +178,14 @@ func init() {
 			params.Add(jsonutils.NewString(args.Name), "name")
 		}
 		if len(args.Format) > 0 {
-			if len(args.Format) == 1 {
-				params.Add(jsonutils.NewString(args.Format[0]), "disk_format")
-			} else {
-				fs := jsonutils.NewArray()
-				for _, f := range args.Format {
-					fs.Add(jsonutils.NewString(f))
-				}
-				params.Add(fs, "disk_formats")
+			fs := jsonutils.NewArray()
+			for _, f := range args.Format {
+				fs.Add(jsonutils.NewString(f))
 			}
+			params.Add(fs, "disk_formats")
+		}
+		if len(args.SubFormats) > 0 {
+			params.Add(jsonutils.Marshal(args.SubFormats), "sub_formats")
 		}
 		result, err := modules.Images.List(s, params)
 		if err != nil {
@@ -252,7 +256,7 @@ func init() {
 	}
 
 	type ImageDeleteOptions struct {
-		ID                    []string `help:"Image ID or name"`
+		ID                    []string `help:"Image ID or name" json:"-"`
 		OverridePendingDelete *bool    `help:"Delete image directly instead of pending delete" short-token:"f"`
 	}
 	R(&ImageDeleteOptions{}, "image-delete", "Delete a image", func(s *mcclient.ClientSession, args *ImageDeleteOptions) error {

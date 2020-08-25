@@ -426,12 +426,12 @@ func (self *SImage) OnJointFailed(ctx context.Context, userCred mcclient.TokenCr
 	self.unprotectImage()
 }
 
-func (self *SImage) OnSaveFailed(ctx context.Context, userCred mcclient.TokenCredential, msg string) {
+func (self *SImage) OnSaveFailed(ctx context.Context, userCred mcclient.TokenCredential, msg jsonutils.JSONObject) {
 	self.saveFailed(userCred, msg)
 	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_IMAGE_SAVE, msg, userCred, false)
 }
 
-func (self *SImage) OnSaveTaskFailed(task taskman.ITask, userCred mcclient.TokenCredential, msg string) {
+func (self *SImage) OnSaveTaskFailed(task taskman.ITask, userCred mcclient.TokenCredential, msg jsonutils.JSONObject) {
 	self.saveFailed(userCred, msg)
 	logclient.AddActionLogWithStartable(task, self, logclient.ACT_IMAGE_SAVE, msg, userCred, false)
 }
@@ -452,9 +452,15 @@ func (self *SImage) saveSuccess(userCred mcclient.TokenCredential, msg string) {
 	db.OpsLog.LogEvent(self, db.ACT_SAVE, msg, userCred)
 }
 
+<<<<<<< HEAD
 func (self *SImage) saveFailed(userCred mcclient.TokenCredential, msg string) {
 	log.Errorf(msg)
 	self.SetStatus(userCred, api.IMAGE_STATUS_KILLED, msg)
+=======
+func (self *SImage) saveFailed(userCred mcclient.TokenCredential, msg jsonutils.JSONObject) {
+	log.Errorf("saveFailed: %s", msg.String())
+	self.SetStatus(userCred, api.IMAGE_STATUS_KILLED, msg.String())
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	self.unprotectImage()
 	db.OpsLog.LogEvent(self, db.ACT_SAVE_FAIL, msg, userCred)
 }
@@ -538,7 +544,12 @@ func (self *SImage) PostCreate(ctx context.Context, userCred mcclient.TokenCrede
 	// if SImage belong to a guest image, pending quota will not be set.
 	if self.IsGuestImage.IsFalse() {
 		pendingUsage := SQuota{Image: 1}
+<<<<<<< HEAD
 		keys := imageCreateInput2QuotaKeys(self.DiskFormat, ownerId)
+=======
+		inputDiskFormat, _ := data.GetString("disk_format")
+		keys := imageCreateInput2QuotaKeys(inputDiskFormat, ownerId)
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 		pendingUsage.SetKeys(keys)
 		cancelUsage := SQuota{Image: 1}
 		keys = self.GetQuotaKeys()
@@ -562,7 +573,7 @@ func (self *SImage) PostCreate(ctx context.Context, userCred mcclient.TokenCrede
 
 		err := self.SaveImageFromStream(appParams.Request.Body, false)
 		if err != nil {
-			self.OnSaveFailed(ctx, userCred, fmt.Sprintf("create upload fail %s", err))
+			self.OnSaveFailed(ctx, userCred, jsonutils.NewString(fmt.Sprintf("create upload fail %s", err)))
 			return
 		}
 
@@ -615,7 +626,7 @@ func (self *SImage) ValidateUpdateData(ctx context.Context, userCred mcclient.To
 				// otherwise, it is needed.
 				err := self.SaveImageFromStream(appParams.Request.Body, !isProbe)
 				if err != nil {
-					self.OnSaveFailed(ctx, userCred, fmt.Sprintf("update upload failed %s", err))
+					self.OnSaveFailed(ctx, userCred, jsonutils.NewString(fmt.Sprintf("update upload failed %s", err)))
 					return nil, httperrors.NewGeneralError(err)
 				}
 				self.OnSaveSuccess(ctx, userCred, "update upload success")
@@ -636,7 +647,7 @@ func (self *SImage) ValidateUpdateData(ctx context.Context, userCred mcclient.To
 				if len(copyFrom) > 0 {
 					err := self.startImageCopyFromUrlTask(ctx, userCred, copyFrom, "")
 					if err != nil {
-						self.OnSaveFailed(ctx, userCred, fmt.Sprintf("update copy from url failed %s", err))
+						self.OnSaveFailed(ctx, userCred, jsonutils.NewString(fmt.Sprintf("update copy from url failed %s", err)))
 						return nil, httperrors.NewGeneralError(err)
 					}
 				}
@@ -774,11 +785,11 @@ func (self *SImage) StartImageCheckTask(ctx context.Context, userCred mcclient.T
 }
 
 func (self *SImage) StartImageConvertTask(ctx context.Context, userCred mcclient.TokenCredential, parentTaskId string) error {
-	err := self.MigrateSubImage()
+	err := self.MigrateSubImage(ctx)
 	if err != nil {
 		return err
 	}
-	err = self.MakeSubImages()
+	err = self.MakeSubImages(ctx)
 	if err != nil {
 		return err
 	}
@@ -963,7 +974,7 @@ func (self *SImage) GetImageType() api.TImageType {
 	}
 }
 
-func (self *SImage) newSubformat(format qemuimg.TImageFormat, migrate bool) error {
+func (self *SImage) newSubformat(ctx context.Context, format qemuimg.TImageFormat, migrate bool) error {
 	subformat := &SImageSubformat{}
 	subformat.SetModelManager(ImageSubformatManager, subformat)
 
@@ -982,7 +993,7 @@ func (self *SImage) newSubformat(format qemuimg.TImageFormat, migrate bool) erro
 
 	subformat.TorrentStatus = api.IMAGE_STATUS_QUEUED
 
-	err := ImageSubformatManager.TableSpec().Insert(subformat)
+	err := ImageSubformatManager.TableSpec().Insert(ctx, subformat)
 	if err != nil {
 		log.Errorf("fail to make subformat %s: %s", format, err)
 		return err
@@ -990,7 +1001,7 @@ func (self *SImage) newSubformat(format qemuimg.TImageFormat, migrate bool) erro
 	return nil
 }
 
-func (self *SImage) MigrateSubImage() error {
+func (self *SImage) MigrateSubImage(ctx context.Context) error {
 	if !qemuimg.IsSupportedImageFormat(self.DiskFormat) {
 		log.Warningf("Unsupported image format %s, no need to migrate", self.DiskFormat)
 		return nil
@@ -1005,9 +1016,9 @@ func (self *SImage) MigrateSubImage() error {
 	if err != nil {
 		return err
 	}
-	if self.GetImageType() != api.ImageTypeISO && imgInst.IsSparse() {
+	if self.GetImageType() != api.ImageTypeISO && imgInst.IsSparse() && utils.IsInStringArray(self.DiskFormat, options.Options.TargetImageFormats) {
 		// need to convert again
-		return self.newSubformat(qemuimg.String2ImageFormat(self.DiskFormat), false)
+		return self.newSubformat(ctx, qemuimg.String2ImageFormat(self.DiskFormat), false)
 	} else {
 		localPath := self.getLocalLocation()
 		if !strings.HasSuffix(localPath, fmt.Sprintf(".%s", self.DiskFormat)) {
@@ -1025,11 +1036,11 @@ func (self *SImage) MigrateSubImage() error {
 				return err
 			}
 		}
-		return self.newSubformat(qemuimg.String2ImageFormat(self.DiskFormat), true)
+		return self.newSubformat(ctx, qemuimg.String2ImageFormat(self.DiskFormat), true)
 	}
 }
 
-func (self *SImage) MakeSubImages() error {
+func (self *SImage) MakeSubImages(ctx context.Context) error {
 	if self.GetImageType() == api.ImageTypeISO {
 		return nil
 	}
@@ -1042,7 +1053,7 @@ func (self *SImage) MakeSubImages() error {
 			// need to create a record
 			subformat := ImageSubformatManager.FetchSubImage(self.Id, format)
 			if subformat == nil {
-				err := self.newSubformat(qemuimg.String2ImageFormat(format), false)
+				err := self.newSubformat(ctx, qemuimg.String2ImageFormat(format), false)
 				if err != nil {
 					return err
 				}
@@ -1155,6 +1166,10 @@ func (manager *SImageManager) ListItemFilter(
 	}
 	if len(query.DiskFormats) > 0 {
 		q = q.In("disk_format", query.DiskFormats)
+	}
+	if len(query.SubFormats) > 0 {
+		sq := ImageSubformatManager.Query().SubQuery()
+		q = q.Join(sq, sqlchemy.Equals(sq.Field("image_id"), q.Field("id"))).Filter(sqlchemy.In(sq.Field("format"), query.SubFormats))
 	}
 	if query.Uefi != nil && *query.Uefi {
 		imagePropertyQ := ImagePropertyManager.Query().

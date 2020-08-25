@@ -24,6 +24,7 @@ import (
 	"yunion.io/x/onecloud/pkg/mcclient"
 )
 
+// +onecloud:swagger-gen-ignore
 type SGuestImageJointManager struct {
 	db.SJointResourceBaseManager
 }
@@ -125,7 +126,7 @@ func (gt *SGuestImageJointManager) CreateGuestImageJoint(ctx context.Context, gu
 	gi.ImageId = imageId
 
 	//
-	if err := gt.TableSpec().Insert(&gi); err != nil {
+	if err := gt.TableSpec().Insert(ctx, &gi); err != nil {
 		return nil, errors.Wrapf(err, "insert guestimage joint error")
 	}
 	gi.SetVirtualObject(gt)

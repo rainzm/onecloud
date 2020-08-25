@@ -49,12 +49,6 @@ var (
 				},
 				{
 					Service:  api.SERVICE_TYPE,
-					Resource: "metadatas",
-					Action:   PolicyActionList,
-					Result:   rbacutils.Allow,
-				},
-				{
-					Service:  api.SERVICE_TYPE,
 					Resource: "cloudregions",
 					Action:   PolicyActionList,
 					Result:   rbacutils.Allow,
@@ -224,24 +218,6 @@ var (
 				{
 					Service:  api.SERVICE_TYPE,
 					Resource: "infras_quotas",
-					Action:   PolicyActionList,
-					Result:   rbacutils.Allow,
-				},
-				{
-					Service:  api.SERVICE_TYPE,
-					Resource: "storages",
-					Action:   PolicyActionList,
-					Result:   rbacutils.Allow,
-				},
-				{
-					Service:  api.SERVICE_TYPE,
-					Resource: "storages",
-					Action:   PolicyActionGet,
-					Result:   rbacutils.Allow,
-				},
-				{
-					Service:  api.SERVICE_TYPE,
-					Resource: "hosts",
 					Action:   PolicyActionList,
 					Result:   rbacutils.Allow,
 				},

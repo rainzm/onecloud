@@ -104,7 +104,7 @@ func (manager *SRoleManager) InitializeData() error {
 	if err != nil {
 		return errors.Wrap(err, "InitializeDomainId")
 	}
-	err = manager.initSysRole()
+	err = manager.initSysRole(context.TODO())
 	if err != nil {
 		return errors.Wrap(err, "initSysRole")
 	}
@@ -127,7 +127,7 @@ func (manager *SRoleManager) initializeDomainId() error {
 	return nil
 }
 
-func (manager *SRoleManager) initSysRole() error {
+func (manager *SRoleManager) initSysRole(ctx context.Context) error {
 	q := manager.Query().Equals("name", api.SystemAdminRole)
 	q = q.Equals("domain_id", api.DEFAULT_DOMAIN_ID)
 	cnt, err := q.CountWithError()
@@ -148,7 +148,7 @@ func (manager *SRoleManager) initSysRole() error {
 	role.Description = "Boostrap system default admin role"
 	role.SetModelManager(manager, &role)
 
-	err = manager.TableSpec().Insert(&role)
+	err = manager.TableSpec().Insert(ctx, &role)
 	if err != nil {
 		return errors.Wrap(err, "insert")
 	}
@@ -188,9 +188,9 @@ func (role *SRole) IsSystemRole() bool {
 }
 
 func (role *SRole) ValidateDeleteCondition(ctx context.Context) error {
-	if role.IsShared() {
-		return httperrors.NewInvalidStatusError("cannot delete shared role")
-	}
+	// if role.IsShared() {
+	// 	return httperrors.NewInvalidStatusError("cannot delete shared role")
+	// }
 	if role.IsSystemRole() {
 		return httperrors.NewForbiddenError("cannot delete system role")
 	}
@@ -261,7 +261,7 @@ func (manager *SRoleManager) ListItemFilter(
 	}
 
 	var projectId string
-	projectStr := query.Project
+	projectStr := query.ProjectId
 	if len(projectStr) > 0 {
 		project, err := ProjectManager.FetchProjectById(projectStr)
 		if err != nil {
@@ -274,7 +274,7 @@ func (manager *SRoleManager) ListItemFilter(
 		projectId = project.Id
 	}
 
-	userStr := query.User
+	userStr := query.UserId
 	if len(projectId) > 0 && len(userStr) > 0 {
 		userObj, err := UserManager.FetchById(userStr)
 		if err != nil {
@@ -288,7 +288,7 @@ func (manager *SRoleManager) ListItemFilter(
 		q = q.In("id", subq.SubQuery())
 	}
 
-	groupStr := query.Group
+	groupStr := query.GroupId
 	if len(projectId) > 0 && len(groupStr) > 0 {
 		groupObj, err := GroupManager.FetchById(groupStr)
 		if err != nil {

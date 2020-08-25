@@ -31,14 +31,18 @@ type SSQLDriver struct {
 	driver.SBaseIdentityDriver
 }
 
-func NewSQLDriver(idpId, idpName, template, targetDomainId string, autoCreateProject bool, conf api.TConfigs) (driver.IIdentityBackend, error) {
-	base, err := driver.NewBaseIdentityDriver(idpId, idpName, template, targetDomainId, autoCreateProject, conf)
+func NewSQLDriver(idpId, idpName, template, targetDomainId string, conf api.TConfigs) (driver.IIdentityBackend, error) {
+	base, err := driver.NewBaseIdentityDriver(idpId, idpName, template, targetDomainId, conf)
 	if err != nil {
 		return nil, err
 	}
 	drv := SSQLDriver{base}
 	drv.SetVirtualObject(&drv)
 	return &drv, nil
+}
+
+func (sql *SSQLDriver) GetSsoRedirectUri(ctx context.Context, callbackUrl, state string) (string, error) {
+	return "", errors.Wrap(httperrors.ErrNotSupported, "not a SSO driver")
 }
 
 func (sql *SSQLDriver) Authenticate(ctx context.Context, ident mcclient.SAuthenticationIdentity) (*api.SUserExtended, error) {

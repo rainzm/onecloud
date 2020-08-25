@@ -274,8 +274,8 @@ func (i *BmRegisterInput) responseSucc(bmId string) {
 	close(i.C)
 }
 
-func (i *BmRegisterInput) responseErr(err error) {
-	httperrors.GeneralServerError(i.W, err)
+func (i *BmRegisterInput) responseErr(ctx context.Context, err error) {
+	httperrors.GeneralServerError(ctx, i.W, err)
 	close(i.C)
 }
 
@@ -294,7 +294,7 @@ func (m *SBaremetalManager) RegisterBaremetal(ctx context.Context, userCred mccl
 	if input.isTimeout() {
 		return
 	} else if err != nil {
-		input.responseErr(httperrors.NewBadRequestError("Verify network failed: %s", err))
+		input.responseErr(ctx, httperrors.NewBadRequestError("Verify network failed: %s", err))
 		return
 	}
 
@@ -302,7 +302,7 @@ func (m *SBaremetalManager) RegisterBaremetal(ctx context.Context, userCred mccl
 	if input.isTimeout() {
 		return
 	} else if err != nil {
-		input.responseErr(httperrors.NewBadRequestError("SSH verify failed: %s", err))
+		input.responseErr(ctx, httperrors.NewBadRequestError("SSH verify failed: %s", err))
 		return
 	}
 
@@ -311,7 +311,7 @@ func (m *SBaremetalManager) RegisterBaremetal(ctx context.Context, userCred mccl
 	if input.isTimeout() {
 		return
 	} else if err != nil {
-		input.responseErr(httperrors.NewBadRequestError("Fetch ipmi address failed: %s", err))
+		input.responseErr(ctx, httperrors.NewBadRequestError("Fetch ipmi address failed: %s", err))
 		return
 	}
 	log.Infof("Find ipmi address %s", input.IpAddr)
@@ -320,7 +320,7 @@ func (m *SBaremetalManager) RegisterBaremetal(ctx context.Context, userCred mccl
 	if input.isTimeout() {
 		return
 	} else if err != nil {
-		input.responseErr(httperrors.NewBadRequestError("Verify network failed: %s", err))
+		input.responseErr(ctx, httperrors.NewBadRequestError("Verify network failed: %s", err))
 		return
 	}
 
@@ -328,7 +328,7 @@ func (m *SBaremetalManager) RegisterBaremetal(ctx context.Context, userCred mccl
 	if input.isTimeout() {
 		return
 	} else if err != nil {
-		input.responseErr(httperrors.NewBadRequestError("IPMI login info not correct: %s", err))
+		input.responseErr(ctx, httperrors.NewBadRequestError("IPMI login info not correct: %s", err))
 		return
 	}
 
@@ -336,7 +336,7 @@ func (m *SBaremetalManager) RegisterBaremetal(ctx context.Context, userCred mccl
 	if input.isTimeout() {
 		return
 	} else if err != nil {
-		input.responseErr(httperrors.NewBadRequestError("Verify mac address failed: %s", err))
+		input.responseErr(ctx, httperrors.NewBadRequestError("Verify mac address failed: %s", err))
 		return
 	}
 
@@ -352,7 +352,7 @@ func (m *SBaremetalManager) RegisterBaremetal(ctx context.Context, userCred mccl
 		bmId, err = registerTask.UpdateBaremetal()
 	}
 	if err != nil {
-		input.responseErr(httperrors.NewInternalServerError(err.Error()))
+		input.responseErr(ctx, httperrors.NewInternalServerError("%v", err))
 		return
 	}
 
@@ -378,7 +378,11 @@ func (m *SBaremetalManager) checkNetworkFromIp(ip string) (string, error) {
 	params := jsonutils.NewDict()
 	params.Set("ip", jsonutils.NewString(ip))
 	params.Set("scope", jsonutils.NewString("system"))
+<<<<<<< HEAD
 	params.Set("is_on_premise", jsonutils.JSONTrue)
+=======
+	params.Set("is_classic", jsonutils.JSONTrue)
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	res, err := modules.Networks.List(m.GetClientSession(), params)
 	if err != nil {
 		return "", fmt.Errorf("Fetch network by ip %s failed: %s", ip, err)
@@ -1041,7 +1045,11 @@ func (b *SBaremetalInstance) findAccessNetwork(accessIp string) (*types.SNetwork
 	params := jsonutils.NewDict()
 	params.Add(jsonutils.NewString(accessIp), "ip")
 	params.Add(jsonutils.NewString("system"), "scope")
+<<<<<<< HEAD
 	params.Add(jsonutils.JSONTrue, "is_on_premise")
+=======
+	params.Add(jsonutils.JSONTrue, "is_classic")
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 	session := b.manager.GetClientSession()
 	ret, err := modules.Networks.List(session, params)
 	if err != nil {

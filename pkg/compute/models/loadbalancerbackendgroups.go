@@ -188,8 +188,12 @@ func (man *SLoadbalancerBackendGroupManager) ValidateCreateData(ctx context.Cont
 	}
 	data.Update(jsonutils.Marshal(input))
 
-	lb := lbV.Model.(*SLoadbalancer)
-	backends := []cloudprovider.SLoadbalancerBackend{}
+	var (
+		lb          = lbV.Model.(*SLoadbalancer)
+		lbRegion    = lb.GetRegion()
+		lbIsManaged = lb.IsManaged()
+		backends    = []cloudprovider.SLoadbalancerBackend{}
+	)
 	if data.Contains("backends") {
 		if err := data.Unmarshal(&backends, "backends"); err != nil {
 			return nil, err
@@ -207,6 +211,8 @@ func (man *SLoadbalancerBackendGroupManager) ValidateCreateData(ctx context.Cont
 			if len(backends[i].ID) == 0 {
 				return nil, httperrors.NewMissingParameterError("Missing backend id")
 			}
+
+			var backendRegion *SCloudregion
 
 			switch backends[i].BackendType {
 			case api.LB_BACKEND_GUEST:
@@ -233,6 +239,7 @@ func (man *SLoadbalancerBackendGroupManager) ValidateCreateData(ctx context.Cont
 					return nil, err
 				}
 				backends[i].Address = address
+				backendRegion = host.GetRegion()
 			case api.LB_BACKEND_HOST:
 				if !db.IsAdminAllowCreate(userCred, man) {
 					return nil, httperrors.NewForbiddenError("only sysadmin can specify host as backend")
@@ -249,8 +256,12 @@ func (man *SLoadbalancerBackendGroupManager) ValidateCreateData(ctx context.Cont
 				backends[i].Name = host.Name
 				backends[i].ExternalID = host.ExternalId
 				backends[i].Address = host.AccessIp
+				backendRegion = host.GetRegion()
 			default:
 				return nil, httperrors.NewInputParameterError("unexpected backend type %s", backends[i].BackendType)
+			}
+			if lbIsManaged && backendRegion.Id != lbRegion.Id {
+				return nil, httperrors.NewInputParameterError("region of backend %d does not match that of lb's", i)
 			}
 		}
 	}
@@ -524,6 +535,15 @@ func (lbbg *SLoadbalancerBackendGroup) StartAwsLoadBalancerBackendGroupCreateTas
 	return nil
 }
 
+func (lbbg *SLoadbalancerBackendGroup) StartOpenstackLoadBalancerBackendGroupCreateTask(ctx context.Context, userCred mcclient.TokenCredential, params *jsonutils.JSONDict, parentTaskId string) error {
+	task, err := taskman.TaskManager.NewTask(ctx, "OpenstackLoadbalancerLoadbalancerBackendGroupCreateTask", lbbg, userCred, params, parentTaskId, "", nil)
+	if err != nil {
+		return err
+	}
+	task.ScheduleRun(nil)
+	return nil
+}
+
 func (lbbg *SLoadbalancerBackendGroup) LBPendingDelete(ctx context.Context, userCred mcclient.TokenCredential) {
 	if lb := lbbg.GetLoadbalancer(); lb != nil && lb.BackendGroupId == lbbg.Id {
 		if _, err := db.UpdateWithLock(ctx, lb, func() error {
@@ -745,6 +765,52 @@ func (lbbg *SLoadbalancerBackendGroup) GetQcloudBackendGroupParams(lblis *SLoadb
 	} else {
 		ret.ListenerID = lblis.GetExternalId()
 	}
+
+	return ret, nil
+}
+
+func (lbbg *SLoadbalancerBackendGroup) GetOpenstackBackendGroupParams(lblis *SLoadbalancerListener, lbr *SLoadbalancerListenerRule) (*cloudprovider.SLoadbalancerBackendGroup, error) {
+	ret, err := lbbg.GetBackendGroupParams()
+	if err != nil {
+		return nil, errors.Wrap(err, "lbbg.GetBackendGroupParams()")
+	}
+
+	var stickySession *cloudprovider.SLoadbalancerStickySession
+	if lblis.StickySession == api.LB_BOOL_ON {
+		stickySession = &cloudprovider.SLoadbalancerStickySession{
+			StickySession:              lblis.StickySession,
+			StickySessionCookie:        lblis.StickySessionCookie,
+			StickySessionType:          lblis.StickySessionType,
+			StickySessionCookieTimeout: lblis.StickySessionCookieTimeout,
+		}
+	}
+
+	var healthCheck *cloudprovider.SLoadbalancerHealthCheck
+	if lblis.HealthCheck == api.LB_BOOL_ON {
+		healthCheck = &cloudprovider.SLoadbalancerHealthCheck{
+			HealthCheckType:     lblis.HealthCheckType,
+			HealthCheckReq:      lblis.HealthCheckReq,
+			HealthCheckExp:      lblis.HealthCheckExp,
+			HealthCheck:         lblis.HealthCheck,
+			HealthCheckTimeout:  lblis.HealthCheckTimeout,
+			HealthCheckDomain:   lblis.HealthCheckDomain,
+			HealthCheckHttpCode: lblis.HealthCheckHttpCode,
+			HealthCheckURI:      lblis.HealthCheckURI,
+			HealthCheckInterval: lblis.HealthCheckInterval,
+			HealthCheckRise:     lblis.HealthCheckRise,
+			HealthCheckFail:     lblis.HealthCheckFall,
+		}
+	}
+
+	if lbr != nil {
+		ret.ListenerID = lbr.GetExternalId()
+	} else {
+		ret.ListenerID = lblis.GetExternalId()
+	}
+	ret.ListenType = lblis.ListenerType
+	ret.Scheduler = lblis.Scheduler
+	ret.StickySession = stickySession
+	ret.HealthCheck = healthCheck
 
 	return ret, nil
 }
@@ -977,7 +1043,7 @@ func (man *SLoadbalancerBackendGroupManager) newFromCloudLoadbalancerBackendgrou
 
 	lbbg.Type = extLoadbalancerBackendgroup.GetType()
 	lbbg.Status = extLoadbalancerBackendgroup.GetStatus()
-	err = man.TableSpec().Insert(lbbg)
+	err = man.TableSpec().Insert(ctx, lbbg)
 	if err != nil {
 		return nil, err
 	}
@@ -1067,7 +1133,7 @@ func (manager *SLoadbalancerBackendGroupManager) initBackendGroupRegion() error 
 
 func (manager *SLoadbalancerBackendGroupManager) GetResourceCount() ([]db.SScopeResourceCount, error) {
 	virts := manager.Query().IsFalse("pending_deleted")
-	return db.CalculateProjectResourceCount(virts)
+	return db.CalculateResourceCount(virts, "tenant_id")
 }
 
 func (manager *SLoadbalancerBackendGroupManager) ListItemExportKeys(ctx context.Context,

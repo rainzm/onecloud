@@ -43,6 +43,7 @@ import (
 	_ "yunion.io/x/onecloud/pkg/compute/storagedrivers"
 	_ "yunion.io/x/onecloud/pkg/compute/tasks"
 	"yunion.io/x/onecloud/pkg/controller/autoscaling"
+	"yunion.io/x/onecloud/pkg/httperrors"
 	_ "yunion.io/x/onecloud/pkg/multicloud/loader"
 )
 
@@ -61,6 +62,7 @@ func StartService() {
 	app_common.InitAuth(commonOpts, func() {
 		log.Infof("Auth complete!!")
 	})
+	common_options.StartOptionManager(opts, opts.ConfigSyncPeriodSeconds, api.SERVICE_TYPE, api.SERVICE_VERSION, options.OnOptionsChange)
 
 	if opts.FetchEtcdServiceInfoAndUseEtcdLock {
 		err := initEtcdLockOpts(opts)
@@ -70,12 +72,10 @@ func StartService() {
 	}
 
 	app := app_common.InitApp(baseOpts, true)
-	InitHandlers(app)
 
+	InitHandlers(app)
 	db.EnsureAppInitSyncDB(app, dbOpts, models.InitDB)
 	defer cloudcommon.CloseDB()
-
-	common_options.StartOptionManager(opts, opts.ConfigSyncPeriodSeconds, api.SERVICE_TYPE, api.SERVICE_VERSION, options.OnOptionsChange)
 
 	options.InitNameSyncResources()
 
@@ -123,6 +123,8 @@ func StartService() {
 		if opts.PrepaidAutoRenew {
 			cron.AddJobAtIntervals("AutoRenewPrepaidServers", time.Duration(opts.PrepaidAutoRenewHours)*time.Hour, models.GuestManager.AutoRenewPrepaidServer)
 		}
+		cron.AddJobAtIntervals("CleanExpiredPostpaidElasticCaches", time.Duration(opts.PrepaidExpireCheckSeconds)*time.Second, models.ElasticcacheManager.DeleteExpiredPostpaids)
+		cron.AddJobAtIntervals("CleanExpiredPostpaidDBInstances", time.Duration(opts.PrepaidExpireCheckSeconds)*time.Second, models.DBInstanceManager.DeleteExpiredPostpaids)
 		cron.AddJobAtIntervals("CleanExpiredPostpaidServers", time.Duration(opts.PrepaidExpireCheckSeconds)*time.Second, models.GuestManager.DeleteExpiredPostpaidServers)
 		cron.AddJobAtIntervals("StartHostPingDetectionTask", time.Duration(opts.HostOfflineDetectionInterval)*time.Second, models.HostManager.PingDetectionTask)
 
@@ -134,6 +136,7 @@ func StartService() {
 		cron.AddJobAtIntervalsWithStartRun("CalculateInfrasQuotaUsages", time.Duration(opts.CalculateQuotaUsageIntervalSeconds)*time.Second, models.InfrasQuotaManager.CalculateQuotaUsages, true)
 
 		cron.AddJobAtIntervalsWithStartRun("AutoSyncCloudaccountTask", time.Duration(opts.CloudAutoSyncIntervalSeconds)*time.Second, models.CloudaccountManager.AutoSyncCloudaccountTask, true)
+		cron.AddJobAtIntervalsWithStartRun("ReconcileBackupGuests", time.Duration(opts.ReconcileGuestBackupIntervalSeconds)*time.Second, models.GuestManager.ReconcileBackupGuests, true)
 
 		cron.AddJobEveryFewHour("AutoDiskSnapshot", 1, 5, 0, models.DiskManager.AutoDiskSnapshot, false)
 		cron.AddJobEveryFewHour("SnapshotsCleanup", 1, 35, 0, models.SnapshotManager.CleanupSnapshots, false)
@@ -142,6 +145,10 @@ func StartService() {
 		cron.AddJobEveryFewDays("SyncDBInstanceSkus", opts.SyncSkusDay, opts.SyncSkusHour, 0, 0, models.SyncDBInstanceSkus, true)
 		cron.AddJobEveryFewDays("SyncElasticCacheSkus", opts.SyncSkusDay, opts.SyncSkusHour, 0, 0, models.SyncElasticCacheSkus, true)
 		cron.AddJobEveryFewDays("StorageSnapshotsRecycle", 1, 2, 0, 0, models.StorageManager.StorageSnapshotsRecycle, false)
+
+		cron.AddJobEveryFewHour("InspectAllTemplate", 1, 0, 0, models.GuestTemplateManager.InspectAllTemplate, true)
+
+		cron.AddJobAtIntervalsWithStartRun("ScheduledTaskCheck", time.Duration(60)*time.Second, models.ScheduledTaskManager.Timer, true)
 		go cron.Start2(ctx, electObj)
 
 		// init auto scaling controller
@@ -175,6 +182,9 @@ func initDefaultEtcdClient(opts *common_options.DBOptions) error {
 func initEtcdLockOpts(opts *options.ComputeOptions) error {
 	etcdEndpoint, err := app_common.FetchEtcdServiceInfo()
 	if err != nil {
+		if errors.Cause(err) == httperrors.ErrNotFound {
+			return nil
+		}
 		return errors.Wrap(err, "fetch etcd service info")
 	}
 	if etcdEndpoint != nil {

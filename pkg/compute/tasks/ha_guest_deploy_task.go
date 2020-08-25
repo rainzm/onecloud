@@ -36,10 +36,10 @@ type HAGuestDeployTask struct {
 	GuestDeployTask
 }
 
-func (self *HAGuestDeployTask) OnDeployGuestComplete(
+func (self *HAGuestDeployTask) OnDeployWaitServerStop(
 	ctx context.Context, guest *models.SGuest, data jsonutils.JSONObject,
 ) {
-	self.DeployBackup(ctx, guest, data)
+	self.DeployBackup(ctx, guest, nil)
 }
 
 func (self *HAGuestDeployTask) DeployBackup(ctx context.Context, guest *models.SGuest, data jsonutils.JSONObject) {
@@ -57,7 +57,9 @@ func (self *HAGuestDeployTask) DeployBackup(ctx context.Context, guest *models.S
 func (self *HAGuestDeployTask) OnDeploySlaveGuestComplete(
 	ctx context.Context, guest *models.SGuest, data jsonutils.JSONObject,
 ) {
-	self.GuestDeployTask.OnDeployGuestComplete(ctx, guest, data)
+	host := guest.GetHost()
+	self.SetStage("OnDeployGuestComplete", nil)
+	self.DeployOnHost(ctx, guest, host)
 }
 
 func (self *HAGuestDeployTask) OnDeploySlaveGuestCompleteFailed(
@@ -73,10 +75,16 @@ type GuestDeployBackupTask struct {
 func (self *GuestDeployBackupTask) OnInit(ctx context.Context, obj db.IStandaloneModel, data jsonutils.JSONObject) {
 	guest := obj.(*models.SGuest)
 	if len(guest.BackupHostId) == 0 {
-		self.SetStageFailed(ctx, "Guest dosen't have backup host")
+		self.OnDeployGuestCompleteFailed(ctx, guest, jsonutils.NewString("Guest dosen't have backup host"))
+		return
 	}
 	self.SetStage("OnDeployGuestComplete", nil)
-	self.DeployBackup(ctx, guest, nil)
+	host := models.HostManager.FetchHostById(guest.BackupHostId)
+	err := guest.GetDriver().RequestDeployGuestOnHost(ctx, guest, host, self)
+	if err != nil {
+		log.Errorf("request_deploy_guest_on_host %s", err)
+		self.OnDeployGuestCompleteFailed(ctx, guest, jsonutils.NewString(err.Error()))
+	}
 }
 
 func (self *GuestDeployBackupTask) OnDeployGuestComplete(ctx context.Context, guest *models.SGuest, data jsonutils.JSONObject) {

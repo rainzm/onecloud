@@ -55,6 +55,7 @@ func init() {
 		Capability []string `help:"capability filter" choices:"project|compute|network|loadbalancer|objectstore|rds|cache|event"`
 
 		DistinctField string `help:"distinct field"`
+		ProxySetting  string `help:"Proxy setting id or name"`
 	}
 	R(&CloudaccountListOptions{}, "cloud-account-list", "List cloud accounts", func(s *mcclient.ClientSession, args *CloudaccountListOptions) error {
 		var params *jsonutils.JSONDict
@@ -66,6 +67,9 @@ func init() {
 			}
 			if len(args.Capability) > 0 {
 				params.Add(jsonutils.NewStringArray(args.Capability), "capability")
+			}
+			if len(args.ProxySetting) > 0 {
+				params.Add(jsonutils.NewString(args.ProxySetting), "proxy_setting")
 			}
 		}
 		if len(args.DistinctField) > 0 {
@@ -115,6 +119,22 @@ func init() {
 		params := jsonutils.Marshal(args)
 		params.(*jsonutils.JSONDict).Add(jsonutils.NewString("VMware"), "provider")
 		result, err := modules.Cloudaccounts.Create(s, params)
+		if err != nil {
+			return err
+		}
+		printObject(result)
+		return nil
+	})
+	type SVMwareCloudAccountPrepareNetsOptions struct {
+		Project       string `help:"project for this account"`
+		ProjectDomain string `help:"domain for this account"`
+		NAME          string `help:"name for this account"`
+		options.SVMwareCredentialWithEnvironment
+	}
+	R(&SVMwareCloudAccountPrepareNetsOptions{}, "cloud-account-preparenets-vmware", "Prepare networks for a VMware cloud account before create this accout", func(s *mcclient.ClientSession, args *SVMwareCloudAccountPrepareNetsOptions) error {
+		params := jsonutils.Marshal(args)
+		params.(*jsonutils.JSONDict).Add(jsonutils.NewString("VMware"), "provider")
+		result, err := modules.Cloudaccounts.PerformClassAction(s, "prepare-nets", params)
 		if err != nil {
 			return err
 		}
@@ -412,6 +432,46 @@ func init() {
 
 	R(&options.SGoogleCloudAccountUpdateOptions{}, "cloud-account-update-google", "update a google cloud account", func(s *mcclient.ClientSession, args *options.SGoogleCloudAccountUpdateOptions) error {
 		params := jsonutils.Marshal(args).(*jsonutils.JSONDict)
+
+		options := jsonutils.NewDict()
+		if len(args.OptionsBillingReportBucket) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsBillingReportBucket), "billing_report_bucket")
+		}
+		if len(args.OptionsBillingBucketAccount) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsBillingBucketAccount), "billing_bucket_account")
+		}
+		if len(args.OptionsBillingFilePrefix) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsBillingFilePrefix), "billing_file_prefix")
+		}
+		if len(args.OptionsUsageReportBucket) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsUsageReportBucket), "usage_report_bucket")
+		}
+		if len(args.OptionsUsageFilePrefix) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsUsageFilePrefix), "usage_file_prefix")
+		}
+		if options.Size() > 0 {
+			params.Add(options, "options")
+		}
+		removeOptions := make([]string, 0)
+		if args.RemoveOptionsBillingReportBucket {
+			removeOptions = append(removeOptions, "billing_report_bucket")
+		}
+		if args.RemoveOptionsBillingBucketAccount {
+			removeOptions = append(removeOptions, "billing_bucket_account")
+		}
+		if args.RemoveOptionsBillingFilePrefix {
+			removeOptions = append(removeOptions, "billing_file_prefix")
+		}
+		if args.RemoveOptionsUsageReportBucket {
+			removeOptions = append(removeOptions, "usage_report_bucket")
+		}
+		if args.RemoveOptionsUsageFilePrefix {
+			removeOptions = append(removeOptions, "usage_file_prefix")
+		}
+		if len(removeOptions) > 0 {
+			params.Add(jsonutils.NewStringArray(removeOptions), "remove_options")
+		}
+
 		if params.Size() == 0 {
 			return InvalidUpdateError()
 		}
@@ -482,6 +542,34 @@ func init() {
 		if params.Size() == 0 {
 			return InvalidUpdateError()
 		}
+
+		options := jsonutils.NewDict()
+		if len(args.OptionsBillingReportBucket) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsBillingReportBucket), "billing_report_bucket")
+		}
+		if len(args.OptionsBillingBucketAccount) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsBillingBucketAccount), "billing_bucket_account")
+		}
+		if len(args.OptionsBillingFilePrefix) > 0 {
+			options.Add(jsonutils.NewString(args.OptionsBillingFilePrefix), "billing_file_prefix")
+		}
+		if options.Size() > 0 {
+			params.Add(options, "options")
+		}
+		removeOptions := make([]string, 0)
+		if args.RemoveOptionsBillingReportBucket {
+			removeOptions = append(removeOptions, "billing_report_bucket")
+		}
+		if args.RemoveOptionsBillingBucketAccount {
+			removeOptions = append(removeOptions, "billing_bucket_account")
+		}
+		if args.RemoveOptionsBillingFilePrefix {
+			removeOptions = append(removeOptions, "billing_file_prefix")
+		}
+		if len(removeOptions) > 0 {
+			params.Add(jsonutils.NewStringArray(removeOptions), "remove_options")
+		}
+
 		result, err := modules.Cloudaccounts.Update(s, args.ID, params)
 		if err != nil {
 			return err
@@ -1039,6 +1127,49 @@ func init() {
 
 	R(&CloudaccountShowOptions{}, "cloud-account-change-owner-candidate-domains", "Show candiate domains of a cloud account changing project", func(s *mcclient.ClientSession, args *CloudaccountShowOptions) error {
 		result, err := modules.Cloudaccounts.GetSpecific(s, args.ID, "change-owner-candidate-domains", nil)
+		if err != nil {
+			return err
+		}
+		printObject(result)
+		return nil
+	})
+
+	type EnrollmentAccountListOptions struct {
+		ID string
+	}
+
+	R(&EnrollmentAccountListOptions{}, "cloud-account-enrollment-accounts", "Show enrollment accounts of cloudaccount", func(s *mcclient.ClientSession, opts *EnrollmentAccountListOptions) error {
+		result, e := modules.Cloudaccounts.GetSpecific(s, opts.ID, "enrollment-accounts", nil)
+		if e != nil {
+			return e
+		}
+		fmt.Println(result.PrettyString())
+		return nil
+	})
+
+	type SubscriptionCreateOptions struct {
+		ID                string `help:"Cloudaccount Id"`
+		NAME              string
+		ENROLLMENTACCOUNT string
+		OfferType         string `choices:"MS-AZR-0148P|MS-AZR-0017P" default:"MS-AZR-0017P"`
+	}
+
+	R(&SubscriptionCreateOptions{}, "cloud-account-create-subscription", "Create subscription for cloudaccount", func(s *mcclient.ClientSession, opts *SubscriptionCreateOptions) error {
+		params := map[string]string{
+			"name":                  opts.NAME,
+			"offer_type":            opts.OfferType,
+			"enrollment_account_id": opts.ENROLLMENTACCOUNT,
+		}
+		ret, e := modules.Cloudaccounts.PerformAction(s, opts.ID, "create-subscription", jsonutils.Marshal(params))
+		if e != nil {
+			return e
+		}
+		printObject(ret)
+		return nil
+	})
+
+	R(&CloudaccountShowOptions{}, "cloud-account-saml", "Get saml info details of a cloud account", func(s *mcclient.ClientSession, args *CloudaccountShowOptions) error {
+		result, err := modules.Cloudaccounts.GetSpecific(s, args.ID, "saml", nil)
 		if err != nil {
 			return err
 		}

@@ -25,6 +25,7 @@ import (
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
+	"yunion.io/x/pkg/util/secrules"
 	"yunion.io/x/pkg/utils"
 
 	billing_api "yunion.io/x/onecloud/pkg/apis/billing"
@@ -50,6 +51,26 @@ type SAliyunRegionDriver struct {
 func init() {
 	driver := SAliyunRegionDriver{}
 	models.RegisterRegionDriver(&driver)
+}
+
+func (self *SAliyunRegionDriver) GetSecurityGroupRuleOrder() cloudprovider.TPriorityOrder {
+	return cloudprovider.PriorityOrderByAsc
+}
+
+func (self *SAliyunRegionDriver) GetDefaultSecurityGroupInRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("in:deny any")}
+}
+
+func (self *SAliyunRegionDriver) GetDefaultSecurityGroupOutRule() cloudprovider.SecurityRule {
+	return cloudprovider.SecurityRule{SecurityRule: *secrules.MustParseSecurityRule("out:allow any")}
+}
+
+func (self *SAliyunRegionDriver) GetSecurityGroupRuleMaxPriority() int {
+	return 1
+}
+
+func (self *SAliyunRegionDriver) GetSecurityGroupRuleMinPriority() int {
+	return 100
 }
 
 func (self *SAliyunRegionDriver) GetProvider() string {
@@ -599,23 +620,6 @@ func (self *SAliyunRegionDriver) ValidateCreateLoadbalancerListenerData(ctx cont
 		if len(lb.LoadbalancerSpec) == 0 {
 			return nil, httperrors.NewInputParameterError("The specified Scheduler %s is invalid for performance sharing loadbalancer", scheduler)
 		}
-		supportRegions := []string{}
-		for region := range map[string]string{
-			"ap-northeast-1":   "东京",
-			"ap-southeast-2":   "悉尼",
-			"ap-southeast-3":   "吉隆坡",
-			"ap-southeast-5":   "雅加达",
-			"eu-frankfurt":     "法兰克福",
-			"na-siliconvalley": "硅谷",
-			"us-east-1":        "弗吉利亚",
-			"me-east-1":        "迪拜",
-			"cn-huhehaote":     "呼和浩特",
-		} {
-			supportRegions = append(supportRegions, "Aliyun/"+region)
-		}
-		if !utils.IsInStringArray(cloudregion.ExternalId, supportRegions) {
-			return nil, httperrors.NewUnsupportOperationError("cloudregion %s(%d) not support %s scheduler", cloudregion.Name, cloudregion.Id, scheduler)
-		}
 	}
 
 	return self.SManagedVirtualizationRegionDriver.ValidateCreateLoadbalancerListenerData(ctx, userCred, ownerId, data, lb, backendGroup)
@@ -763,7 +767,7 @@ func (self *SAliyunRegionDriver) ValidateUpdateLoadbalancerListenerData(ctx cont
 			supportRegions = append(supportRegions, "Aliyun/"+region)
 		}
 		if !utils.IsInStringArray(cloudregion.ExternalId, supportRegions) {
-			return nil, httperrors.NewUnsupportOperationError("cloudregion %s(%d) not support %s scheduler", cloudregion.Name, cloudregion.Id, scheduler)
+			return nil, httperrors.NewUnsupportOperationError("cloudregion %s(%s) not support %s scheduler", cloudregion.Name, cloudregion.Id, scheduler)
 		}
 	}
 
@@ -971,6 +975,26 @@ func (self *SAliyunRegionDriver) IsSecurityGroupBelongVpc() bool {
 	return true
 }
 
+func (self *SAliyunRegionDriver) ValidateDBInstanceRecovery(ctx context.Context, userCred mcclient.TokenCredential, instance *models.SDBInstance, backup *models.SDBInstanceBackup, input api.SDBInstanceRecoveryConfigInput) error {
+	if !utils.IsInStringArray(instance.Engine, []string{api.DBINSTANCE_TYPE_MYSQL, api.DBINSTANCE_TYPE_SQLSERVER}) {
+		return httperrors.NewNotSupportedError("Aliyun %s not support recovery", instance.Engine)
+	}
+	if instance.Engine == api.DBINSTANCE_TYPE_MYSQL {
+		if backup.DBInstanceId != instance.Id {
+			return httperrors.NewUnsupportOperationError("Aliyun %s only support recover from it self backups", instance.Engine)
+		}
+		if !((utils.IsInStringArray(instance.EngineVersion, []string{"8.0", "5.7"}) &&
+			instance.StorageType == api.ALIYUN_DBINSTANCE_STORAGE_TYPE_LOCAL_SSD &&
+			instance.Category == api.ALIYUN_DBINSTANCE_CATEGORY_HA) || (instance.EngineVersion == "5.6" && instance.Category == api.ALIYUN_DBINSTANCE_CATEGORY_HA)) {
+			return httperrors.NewUnsupportOperationError("Aliyun %s only 8.0 and 5.7 high_availability local_ssd or 5.6 high_availability support recovery from it self backups", instance.Engine)
+		}
+	}
+	if len(input.Databases) == 0 {
+		return httperrors.NewMissingParameterError("databases")
+	}
+	return nil
+}
+
 func (self *SAliyunRegionDriver) ValidateCreateDBInstanceData(ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, input api.DBInstanceCreateInput, skus []models.SDBInstanceSku, network *models.SNetwork) (api.DBInstanceCreateInput, error) {
 	if input.BillingType == billing_api.BILLING_TYPE_PREPAID && len(input.MasterInstanceId) > 0 {
 		return input, httperrors.NewInputParameterError("slave dbinstance not support prepaid billing type")
@@ -1031,7 +1055,7 @@ func (self *SAliyunRegionDriver) ValidateCreateDBInstanceData(ctx context.Contex
 				return input, httperrors.NewInputParameterError("SQL Server cannot have more than seven read-only dbinstances")
 			}
 		default:
-			return input, httperrors.NewInputParameterError("Not support create readonly dbinstance which master dbinstance engine is", master.Engine)
+			return input, httperrors.NewInputParameterError("Not support create readonly dbinstance with master dbinstance engine %s", master.Engine)
 		}
 	}
 
@@ -1050,7 +1074,7 @@ func (self *SAliyunRegionDriver) ValidateCreateDBInstanceData(ctx context.Contex
 				return input, httperrors.NewGeneralError(err)
 			}
 			if count < 2 {
-				return input, httperrors.NewInputParameterError("At least two networks are required under vpc %s(%s) whith aliyun %s(%s)", vpc.Name, vpc.Id, input.Engine, input.Category)
+				return input, httperrors.NewInputParameterError("At least two networks are required under vpc %s(%s) with aliyun %s(%s)", vpc.Name, vpc.Id, input.Engine, input.Category)
 			}
 		}
 	}
@@ -1101,6 +1125,7 @@ func (self *SAliyunRegionDriver) RequestCreateDBInstanceBackup(ctx context.Conte
 		}
 		result := models.DBInstanceBackupManager.SyncDBInstanceBackups(ctx, userCred, backup.GetCloudprovider(), instance, backup.GetRegion(), backups)
 		log.Infof("SyncDBInstanceBackups for dbinstance %s(%s) result: %s", instance.Name, instance.Id, result.Result())
+		instance.SetStatus(userCred, api.DBINSTANCE_RUNNING, "")
 		return nil, nil
 	})
 	return nil
@@ -1266,11 +1291,15 @@ func (self *SAliyunRegionDriver) RequestCreateElasticcache(ctx context.Context, 
 			return nil, errors.Wrap(err, "aliyunRegionDriver.CreateElasticcache.GetProvider")
 		}
 
-		provider := iprovider.(*models.SCloudprovider)
-
 		params, err := ec.GetCreateAliyunElasticcacheParams(task.GetParams())
 		if err != nil {
 			return nil, errors.Wrap(err, "aliyunRegionDriver.CreateElasticcache.GetCreateAliyunElasticcacheParams")
+		}
+
+		provider := iprovider.(*models.SCloudprovider)
+		params.ProjectId, err = provider.SyncProject(ctx, userCred, ec.ProjectId)
+		if err != nil {
+			log.Errorf("failed to sync project %s for create %s elastic cache %s error: %v", ec.ProjectId, provider.Provider, ec.Name, err)
 		}
 
 		iec, err := iRegion.CreateIElasticcaches(params)
@@ -1498,7 +1527,7 @@ func (self *SAliyunRegionDriver) RequestElasticcacheAccountResetPassword(ctx con
 
 	ec := _ec.(*models.SElasticcache)
 	iec, err := iregion.GetIElasticcacheById(ec.GetExternalId())
-	if err == cloudprovider.ErrNotFound {
+	if errors.Cause(err) == cloudprovider.ErrNotFound {
 		return nil
 	} else if err != nil {
 		return errors.Wrap(err, "aliyunRegionDriver.RequestElasticcacheAccountResetPassword.GetIElasticcacheById")

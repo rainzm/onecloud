@@ -267,7 +267,6 @@ func (opts *BaseListOptions) Params() (*jsonutils.JSONDict, error) {
 	}
 	if BoolV(opts.PendingDeleteAll) {
 		params.Set("pending_delete", jsonutils.NewString("all"))
-		params.Set("details", jsonutils.JSONTrue) // required to get pending_deleted field
 	}
 	/*if opts.Admin == nil {
 		requiresSystem := len(opts.Tenant) > 0 ||
@@ -302,4 +301,24 @@ func (opts *BaseListOptions) Params() (*jsonutils.JSONDict, error) {
 		tagIdx++
 	}
 	return params, nil
+}
+
+func (o *BaseListOptions) GetExportFile() string {
+	return o.ExportFile
+}
+
+func (o *BaseListOptions) GetExportKeys() string {
+	return o.ExportKeys
+}
+
+func (o *BaseListOptions) GetExportTexts() string {
+	return o.ExportTexts
+}
+
+type ScopedResourceListOptions struct {
+	BelongScope string `help:"Filter by resource belong scope" choices:"system|domain|project"`
+}
+
+func (o *ScopedResourceListOptions) Params() (*jsonutils.JSONDict, error) {
+	return optionsStructToParams(o)
 }

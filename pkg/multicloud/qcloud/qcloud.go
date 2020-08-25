@@ -50,6 +50,7 @@ const (
 	QCLOUD_CLB_API_VERSION     = "2018-03-17"
 	QCLOUD_BILLING_API_VERSION = "2018-07-09"
 	QCLOUD_AUDIT_API_VERSION   = "2019-03-19"
+	QCLOUD_CAM_API_VERSION     = "2019-01-16"
 )
 
 type QcloudClientConfig struct {
@@ -182,6 +183,11 @@ func billingRequest(client *common.Client, apiName string, params map[string]str
 	return _jsonRequest(client, domain, QCLOUD_BILLING_API_VERSION, apiName, params, debug, true)
 }
 
+func camRequest(client *common.Client, apiName string, params map[string]string, debug bool) (jsonutils.JSONObject, error) {
+	domain := "cam.tencentcloudapi.com"
+	return _jsonRequest(client, domain, QCLOUD_CAM_API_VERSION, apiName, params, debug, true)
+}
+
 func monitorRequest(client *common.Client, apiName string, params map[string]string,
 	debug bool) (jsonutils.JSONObject, error) {
 	domain := "monitor.tencentcloudapi.com"
@@ -256,10 +262,11 @@ func (r *vpc2017JsonResponse) GetResponse() *interface{} {
 
 // SSL证书专用response
 type wssJsonResponse struct {
-	Code     int          `json:"code"`
-	CodeDesc string       `json:"codeDesc"`
-	Message  string       `json:"message"`
-	Response *interface{} `json:"data"`
+	Code      int          `json:"code"`
+	CodeDesc  string       `json:"codeDesc"`
+	ProjectId int          `json:"projectId"`
+	Message   string       `json:"message"`
+	Response  *interface{} `json:"data"`
 }
 
 func (r *wssJsonResponse) ParseErrorFromHTTPResponse(body []byte) (err error) {
@@ -276,6 +283,11 @@ func (r *wssJsonResponse) ParseErrorFromHTTPResponse(body []byte) (err error) {
 }
 
 func (r *wssJsonResponse) GetResponse() *interface{} {
+	if r.Response == nil {
+		return func(resp interface{}) *interface{} {
+			return &resp
+		}(jsonutils.Marshal(r))
+	}
 	return r.Response
 }
 
@@ -395,8 +407,10 @@ func _baseJsonRequest(client *common.Client, req tchttp.Request, resp qcloudResp
 				break
 			}
 		}
-		if strings.Contains(err.Error(), "Code=ResourceNotFound") {
-			return nil, cloudprovider.ErrNotFound
+		for _, code := range []string{"InvalidParameter.RoleNotExist", "Code=ResourceNotFound"} {
+			if strings.Contains(err.Error(), code) {
+				return nil, errors.Wrap(cloudprovider.ErrNotFound, err.Error())
+			}
 		}
 		if strings.Contains(err.Error(), "Code=UnsupportedRegion") {
 			return nil, cloudprovider.ErrNotSupported
@@ -411,7 +425,10 @@ func _baseJsonRequest(client *common.Client, req tchttp.Request, resp qcloudResp
 	}
 	if debug {
 		log.Debugf("request: %s", req.GetParams())
-		log.Debugf("response: %s", jsonutils.Marshal(resp.GetResponse()).PrettyString())
+		response := resp.GetResponse()
+		if response != nil {
+			log.Debugf("response: %s", jsonutils.Marshal(response).PrettyString())
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -508,6 +525,14 @@ func (client *SQcloudClient) billingRequest(apiName string, params map[string]st
 		return nil, err
 	}
 	return billingRequest(cli, apiName, params, client.debug)
+}
+
+func (client *SQcloudClient) camRequest(apiName string, params map[string]string) (jsonutils.JSONObject, error) {
+	cli, err := client.getDefaultClient()
+	if err != nil {
+		return nil, err
+	}
+	return camRequest(cli, apiName, params, client.debug)
 }
 
 func (client *SQcloudClient) jsonRequest(apiName string, params map[string]string, retry bool) (jsonutils.JSONObject, error) {
@@ -658,6 +683,10 @@ func (client *SQcloudClient) GetAccountId() string {
 	return client.ownerName
 }
 
+func (client *SQcloudClient) GetIamLoginUrl() string {
+	return fmt.Sprintf("https://cloud.tencent.com/login/subAccount?account=%s", client.ownerName)
+}
+
 func (client *SQcloudClient) GetIRegions() []cloudprovider.ICloudRegion {
 	return client.iregions
 }
@@ -758,20 +787,11 @@ func (client *SQcloudClient) QueryAccountBalance() (*SAccountBalance, error) {
 }
 
 func (client *SQcloudClient) GetIProjects() ([]cloudprovider.ICloudProject, error) {
-	projects := []SProject{}
-	params := map[string]string{"allList": "1"}
-	body, err := client.accountRequestRequest("DescribeProject", params)
+	projects, err := client.GetProjects()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "GetProjects")
 	}
-	if err := body.Unmarshal(&projects); err != nil {
-		return nil, err
-	}
-	projects = append(projects, SProject{
-		ProjectId:   "0",
-		ProjectName: "默认项目",
-		// CreateTime:  time.Time{},
-	})
+	projects = append(projects, SProject{ProjectId: "0", ProjectName: "默认项目"})
 	iprojects := []cloudprovider.ICloudProject{}
 	for i := 0; i < len(projects); i++ {
 		projects[i].client = client
@@ -790,6 +810,11 @@ func (self *SQcloudClient) GetCapabilities() []string {
 		// cloudprovider.CLOUD_CAPABILITY_RDS,
 		// cloudprovider.CLOUD_CAPABILITY_CACHE,
 		cloudprovider.CLOUD_CAPABILITY_EVENT,
+		cloudprovider.CLOUD_CAPABILITY_CLOUDID,
 	}
 	return caps
+}
+
+func (self *SQcloudClient) GetSamlSpInitiatedLoginUrl(idpName string) string {
+	return fmt.Sprintf("https://cloud.tencent.com/login/forwardIdp/%s/%s", self.ownerName, idpName)
 }

@@ -40,6 +40,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	cloudtypes "yunion.io/x/onecloud/pkg/cloudcommon/types"
 	"yunion.io/x/onecloud/pkg/cloudprovider"
+	"yunion.io/x/onecloud/pkg/multicloud"
 	"yunion.io/x/onecloud/pkg/util/billing"
 	"yunion.io/x/onecloud/pkg/util/netutils2"
 )
@@ -47,6 +48,7 @@ import (
 var VIRTUAL_MACHINE_PROPS = []string{"name", "parent", "runtime", "summary", "config", "guest", "resourcePool", "layoutEx"}
 
 type SVirtualMachine struct {
+	multicloud.SInstanceBase
 	SManagedObject
 
 	vnics  []SVirtualNIC
@@ -212,10 +214,6 @@ func (self *SVirtualMachine) GetIHost() cloudprovider.ICloudHost {
 		self.ihost = self.getIHost()
 	}
 	return self.ihost
-}
-
-func (self *SVirtualMachine) GetIHostId() string {
-	return ""
 }
 
 func (self *SVirtualMachine) getIHost() cloudprovider.ICloudHost {
@@ -510,6 +508,13 @@ func (self *SVirtualMachine) shutdownVM(ctx context.Context) error {
 
 func (self *SVirtualMachine) doDelete(ctx context.Context) error {
 	vm := self.getVmObj()
+	// detach all disks first
+	for i := range self.vdisks {
+		err := self.doDetachAndDeleteDisk(ctx, &self.vdisks[i])
+		if err != nil {
+			return errors.Wrap(err, "doDetachAndDeteteDisk")
+		}
+	}
 
 	task, err := vm.Destroy(ctx)
 	if err != nil {
@@ -547,10 +552,6 @@ func (self *SVirtualMachine) doDetachDisk(ctx context.Context, vdisk *SVirtualDi
 	removeSpec.Operation = types.VirtualDeviceConfigSpecOperationRemove
 	removeSpec.Device = vdisk.dev
 
-	if remove {
-		removeSpec.FileOperation = types.VirtualDeviceConfigSpecFileOperationDestroy
-	}
-
 	spec := types.VirtualMachineConfigSpec{}
 	spec.DeviceChange = []types.BaseVirtualDeviceConfigSpec{&removeSpec}
 
@@ -568,7 +569,10 @@ func (self *SVirtualMachine) doDetachDisk(ctx context.Context, vdisk *SVirtualDi
 		return err
 	}
 
-	return nil
+	if !remove {
+		return nil
+	}
+	return vdisk.Delete(ctx)
 }
 
 func (self *SVirtualMachine) GetVNCInfo() (jsonutils.JSONObject, error) {
@@ -849,6 +853,16 @@ func (self *SVirtualMachine) FindDiskByDriver(drivers ...string) []SVirtualDisk 
 	return disks
 }
 
+func (self *SVirtualMachine) devNumWithCtrlKey(ctrlKey int32) int {
+	n := 0
+	for _, dev := range self.devs {
+		if dev.getControllerKey() == ctrlKey {
+			n++
+		}
+	}
+	return n
+}
+
 func (self *SVirtualMachine) CreateDisk(ctx context.Context, sizeMb int, uuid string, driver string) error {
 	if driver == "pvscsi" {
 		driver = "scsi"
@@ -860,29 +874,30 @@ func (self *SVirtualMachine) CreateDisk(ctx context.Context, sizeMb int, uuid st
 	if len(devs) == 0 {
 		return self.createDriverAndDisk(ctx, sizeMb, uuid, driver)
 	}
-	ctlKey := minDevKey(devs)
-	drivers := []string{driver}
-	if driver == "scsi" {
-		drivers = append(drivers, "pvscsi")
+	numDevBelowCtrl := make([]int, len(devs))
+	for i := range numDevBelowCtrl {
+		numDevBelowCtrl[i] = self.devNumWithCtrlKey(devs[i].getKey())
 	}
-	sameDisks := self.FindDiskByDriver(drivers...)
 
+	// find the min one
+	ctrlKey := devs[0].getKey()
+	unitNumber := numDevBelowCtrl[0]
+	for i := 1; i < len(numDevBelowCtrl); i++ {
+		if numDevBelowCtrl[i] >= unitNumber {
+			continue
+		}
+		ctrlKey = devs[i].getKey()
+		unitNumber = numDevBelowCtrl[i]
+	}
 	diskKey := self.FindMinDiffKey(2000)
-	if len(sameDisks) != 0 {
-		diskKey = minDiskKey(sameDisks)
-	}
-	index := len(sameDisks)
-	if driver == "ide" {
-		ctlKey += int32(index / 2)
-	}
 
 	// By default, the virtual SCSI controller is assigned to virtual device node (z:7),
 	// so that device node is unavailable for hard disks or other devices.
-	if index >= 7 && driver == "scsi" {
-		index++
+	if unitNumber >= 7 && driver == "scsi" {
+		unitNumber++
 	}
 
-	return self.createDiskInternal(ctx, sizeMb, uuid, int32(index), diskKey, ctlKey, "", true)
+	return self.createDiskInternal(ctx, sizeMb, uuid, int32(unitNumber), diskKey, ctrlKey, "", true)
 }
 
 // createDriverAndDisk will create a driver and disk associated with the driver
@@ -912,7 +927,7 @@ func (self *SVirtualMachine) createDiskWithDeviceChange(ctx context.Context,
 	deviceChange []types.BaseVirtualDeviceConfigSpec, sizeMb int,
 	uuid string, index int32, diskKey int32, ctlKey int32, imagePath string, check bool) error {
 
-	devSpec := NewDiskDev(int64(sizeMb), imagePath, uuid, index, diskKey, ctlKey)
+	devSpec := NewDiskDev(int64(sizeMb), imagePath, uuid, index, 0, ctlKey, diskKey)
 	spec := addDevSpec(devSpec)
 	spec.FileOperation = types.VirtualDeviceConfigSpecFileOperationCreate
 	configSpec := types.VirtualMachineConfigSpec{}
@@ -1200,4 +1215,60 @@ func (self *SVirtualMachine) FindMinDiffKey(limit int32) int32 {
 		}
 	}
 	return limit
+}
+
+func (self *SVirtualMachine) relocate(hostId string) error {
+	var targetHs *mo.HostSystem
+	if hostId == "" {
+		return errors.Wrap(fmt.Errorf("require hostId"), "relocate")
+	}
+	ihost, err := self.manager.GetIHostById(hostId)
+	if err != nil {
+		return errors.Wrap(err, "self.manager.GetIHostById(hostId)")
+	}
+	targetHs = ihost.(*SHost).object.(*mo.HostSystem)
+	if len(targetHs.Datastore) < 1 {
+		return errors.Wrap(fmt.Errorf("target host has no datastore"), "relocate")
+	}
+	ctx := self.manager.context
+	config := types.VirtualMachineRelocateSpec{}
+	hrs := targetHs.Reference()
+	config.Host = &hrs
+	config.Datastore = &targetHs.Datastore[0]
+	task, err := self.getVmObj().Relocate(ctx, config, types.VirtualMachineMovePriorityDefaultPriority)
+	if err != nil {
+		log.Errorf("vm.Migrate %s", err)
+		return errors.Wrap(err, "SVirtualMachine Migrate")
+	}
+	err = task.Wait(ctx)
+	if err != nil {
+		log.Errorf("task.Wait %s", err)
+		return errors.Wrap(err, "task.wait")
+	}
+	return nil
+}
+
+func (self *SVirtualMachine) MigrateVM(hostId string) error {
+	return self.relocate(hostId)
+}
+
+func (self *SVirtualMachine) LiveMigrateVM(hostId string) error {
+	return self.relocate(hostId)
+}
+
+func (self *SVirtualMachine) GetIHostId() string {
+	ctx := self.manager.context
+	hs, err := self.getVmObj().HostSystem(ctx)
+	if err != nil {
+		log.Errorf("get HostSystem %s", err)
+		return ""
+	}
+	var moHost mo.HostSystem
+	err = self.manager.reference2Object(hs.Reference(), HOST_SYSTEM_PROPS, &moHost)
+	if err != nil {
+		log.Errorf("hostsystem reference2Object %s", err)
+		return ""
+	}
+	shost := NewHost(nil, &moHost, nil)
+	return shost.GetGlobalId()
 }

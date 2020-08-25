@@ -25,7 +25,19 @@ import (
 )
 
 func init() {
-	models.RegisterSuggestSysRuleDrivers(NewEIPUsedDriver(), NewDiskUnusedDriver(), NewLBUnusedDriver(), NewScaleDownDriver())
+	models.RegisterSuggestSysRuleDrivers(
+		NewEIPUsedDriver(),
+		NewDiskUnusedDriver(),
+		NewLBUnusedDriver(),
+		NewSnapshotUnusedDriver(),
+		NewScaleDownDriver(),
+		NewRdsUnreasonableDriver(),
+		NewOssUnreasonableDriver(),
+		NewRedisUnreasonableDriver(),
+		NewSecGroupRuleInServerDriver(),
+		NewOssSecAclDriver(),
+	)
+
 }
 
 func InitSuggestSysRuleCronjob() {
@@ -38,7 +50,7 @@ func InitSuggestSysRuleCronjob() {
 		if suggestSysRuleConfig.Enabled.Bool() {
 			dur, _ := time.ParseDuration(suggestSysRuleConfig.Period)
 			cronman.GetCronJobManager().AddJobAtIntervalsWithStartRun(suggestSysRuleConfig.Type, dur,
-				models.GetSuggestSysRuleDrivers()[suggestSysRuleConfig.Type].DoSuggestSysRule, true)
+				suggestSysRuleConfig.GetDriver().DoSuggestSysRule, true)
 		}
 	}
 }

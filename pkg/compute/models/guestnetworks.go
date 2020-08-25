@@ -16,11 +16,9 @@ package models
 
 import (
 	"context"
-	"crypto/md5"
-	"crypto/rand"
 	"database/sql"
 	"fmt"
-	"io"
+	"math/rand"
 	"regexp"
 	"time"
 
@@ -37,6 +35,7 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
+	randutil "yunion.io/x/onecloud/pkg/util/rand"
 	"yunion.io/x/onecloud/pkg/util/rbacutils"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
 )
@@ -100,18 +99,13 @@ type SGuestnetwork struct {
 
 	// IPv4映射地址，当子网属于私有云vpc的时候分配，用于访问外网
 	MappedIpAddr string `width:"16" charset:"ascii" nullable:"true" list:"user"`
+
+	// 网卡关联的Eip实例
+	EipId string `width:"36" charset:"ascii" nullable:"true" list:"user"`
 }
 
 func (manager *SGuestnetworkManager) GetSlaveFieldName() string {
 	return "network_id"
-}
-
-func (joint *SGuestnetwork) Master() db.IStandaloneModel {
-	return db.JointMaster(joint)
-}
-
-func (joint *SGuestnetwork) Slave() db.IStandaloneModel {
-	return db.JointSlave(joint)
 }
 
 func (self *SGuestnetwork) GetExtraDetails(
@@ -140,6 +134,9 @@ func (manager *SGuestnetworkManager) FetchCustomizeColumns(
 			GuestJointResourceDetails: guestRows[i],
 		}
 		netIds[i] = objs[i].(*SGuestnetwork).NetworkId
+		iNet, _ := NetworkManager.FetchById(netIds[i])
+		net := iNet.(*SNetwork)
+		rows[i].WireId = net.WireId
 	}
 
 	netIdMaps, err := db.FetchIdNameMap2(NetworkManager, netIds)
@@ -277,22 +274,11 @@ func (manager *SGuestnetworkManager) newGuestNetwork(
 	}
 	gn.Ifname = ifname
 	gn.TeamWith = teamWithMac
-	err = manager.TableSpec().Insert(&gn)
+	err = manager.TableSpec().Insert(ctx, &gn)
 	if err != nil {
 		return nil, err
 	}
 	return &gn, nil
-}
-
-func (self *SGuestnetwork) getVirtualRand(width int, randomized bool) string {
-	hash := md5.New()
-	io.WriteString(hash, self.GuestId)
-	io.WriteString(hash, self.NetworkId)
-	if randomized {
-		io.WriteString(hash, fmt.Sprintf("%d", time.Now().Unix()))
-	}
-	hex := fmt.Sprintf("%x", hash.Sum(nil))
-	return hex[:width]
 }
 
 func (self *SGuestnetwork) generateIfname(network *SNetwork, virtual bool, randomized bool) string {
@@ -305,8 +291,7 @@ func (self *SGuestnetwork) generateIfname(network *SNetwork, virtual bool, rando
 		nName = nName[:(MAX_IFNAME_SIZE - 4)]
 	}
 	if virtual {
-		rand := self.getVirtualRand(3, randomized)
-		return fmt.Sprintf("%s-%s", nName, rand)
+		return fmt.Sprintf("%s-%s", nName, randutil.String(3))
 	} else {
 		ip, _ := netutils.NewIPV4Addr(self.IpAddr)
 		cliaddr := ip.CliAddr(network.GuestIpMask)
@@ -652,7 +637,7 @@ func totalGuestNicCount(
 	q = q.Join(hosts, sqlchemy.Equals(guests.Field("host_id"), hosts.Field("id")))
 
 	q = CloudProviderFilter(q, hosts.Field("manager_id"), providers, brands, cloudEnv)
-	q = RangeObjectsFilter(q, rangeObjs, nil, hosts.Field("zone_id"), hosts.Field("manager_id"))
+	q = RangeObjectsFilter(q, rangeObjs, nil, hosts.Field("zone_id"), hosts.Field("manager_id"), hosts.Field("id"), nil)
 
 	switch scope {
 	case rbacutils.ScopeSystem:

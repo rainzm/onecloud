@@ -439,8 +439,7 @@ func (this *ImageManager) _create(s *mcclient.ClientSession, params jsonutils.JS
 	path := fmt.Sprintf("/%s", this.URLPath())
 	method := httputils.POST
 	if len(imageId) == 0 {
-		name, _ := params.GetString("name")
-		if len(name) == 0 {
+		if !params.Contains("name") && !params.Contains("generate_name") {
 			return nil, httperrors.NewMissingParameterError("name")
 		}
 	} else {
@@ -467,7 +466,7 @@ func (this *ImageManager) _create(s *mcclient.ClientSession, params jsonutils.JS
 		}
 	}
 	resp, err := modulebase.RawRequest(this.ResourceManager, s, method, path, headers, body)
-	_, json, err := s.ParseJSONResponse(resp, err)
+	_, json, err := s.ParseJSONResponse("", resp, err)
 	if err != nil {
 		return nil, err
 	}
@@ -507,7 +506,7 @@ func (this *ImageManager) _update(s *mcclient.ClientSession, id string, params j
 	}
 	path := fmt.Sprintf("/%s/%s", this.URLPath(), url.PathEscape(id))
 	resp, err := modulebase.RawRequest(this.ResourceManager, s, "PUT", path, headers, body)
-	_, json, err := s.ParseJSONResponse(resp, err)
+	_, json, err := s.ParseJSONResponse("", resp, err)
 	if err != nil {
 		return nil, err
 	}
@@ -561,7 +560,7 @@ func (this *ImageManager) Download(s *mcclient.ClientSession, id string, format 
 		}
 		return FetchImageMeta(resp.Header), resp.Body, sizeBytes, nil
 	} else {
-		_, _, err = s.ParseJSONResponse(resp, err)
+		_, _, err = s.ParseJSONResponse("", resp, err)
 		return nil, nil, -1, err
 	}
 }

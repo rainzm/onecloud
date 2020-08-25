@@ -18,13 +18,17 @@ import (
 	"fmt"
 	"time"
 
+	"yunion.io/x/jsonutils"
 	"yunion.io/x/pkg/errors"
 
+	api "yunion.io/x/onecloud/pkg/apis/compute"
+	"yunion.io/x/onecloud/pkg/cloudprovider"
 	"yunion.io/x/onecloud/pkg/multicloud"
 )
 
 type SResourceGroup struct {
 	multicloud.SResourceBase
+	client *SAliyunClient
 
 	Status      string
 	AccountId   string
@@ -49,8 +53,25 @@ func (self *SResourceGroup) GetName() string {
 	return self.Name
 }
 
+func (self *SResourceGroup) Refresh() error {
+	group, err := self.client.GetResourceGroup(self.Id)
+	if err != nil {
+		return errors.Wrap(err, "GetResourceGroup")
+	}
+	return jsonutils.Update(self, group)
+}
+
 func (self *SResourceGroup) GetStatus() string {
-	return ""
+	switch self.Status {
+	case "Creating":
+		return api.EXTERNAL_PROJECT_STATUS_CREATING
+	case "OK":
+		return api.EXTERNAL_PROJECT_STATUS_AVAILABLE
+	case "Deleted", "Deleting", "PendingDelete":
+		return api.EXTERNAL_PROJECT_STATUS_DELETING
+	default:
+		return api.EXTERNAL_PROJECT_STATUS_UNKNOWN
+	}
 }
 
 func (self *SAliyunClient) GetResourceGroups(pageNumber int, pageSize int) ([]SResourceGroup, int, error) {
@@ -75,4 +96,49 @@ func (self *SAliyunClient) GetResourceGroups(pageNumber int, pageSize int) ([]SR
 	}
 	total, _ := resp.Int("TotalCount")
 	return groups, int(total), nil
+}
+
+func (self *SAliyunClient) CreateIProject(name string) (cloudprovider.ICloudProject, error) {
+	group, err := self.CreateResourceGroup(name)
+	if err != nil {
+		return nil, errors.Wrap(err, "CreateProject")
+	}
+	return group, nil
+}
+
+func (self *SAliyunClient) CreateResourceGroup(name string) (*SResourceGroup, error) {
+	params := map[string]string{
+		"DisplayName": name,
+		"Name":        name,
+	}
+	resp, err := self.rmRequest("CreateResourceGroup", params)
+	if err != nil {
+		return nil, errors.Wrap(err, "CreateResourceGroup")
+	}
+	group := &SResourceGroup{client: self}
+	err = resp.Unmarshal(group, "ResourceGroup")
+	if err != nil {
+		return nil, errors.Wrap(err, "resp.Unmarshal")
+	}
+	err = cloudprovider.WaitStatus(group, api.EXTERNAL_PROJECT_STATUS_AVAILABLE, time.Second*5, time.Minute*3)
+	if err != nil {
+		return nil, errors.Wrap(err, "WaitStatus")
+	}
+	return group, nil
+}
+
+func (self *SAliyunClient) GetResourceGroup(id string) (*SResourceGroup, error) {
+	params := map[string]string{
+		"ResourceGroupId": id,
+	}
+	resp, err := self.rmRequest("GetResourceGroup", params)
+	if err != nil {
+		return nil, err
+	}
+	group := &SResourceGroup{client: self}
+	err = resp.Unmarshal(group, "ResourceGroup")
+	if err != nil {
+		return nil, errors.Wrap(err, "resp.Unmarshal")
+	}
+	return group, nil
 }

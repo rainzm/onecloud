@@ -15,7 +15,14 @@
 package misc
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/base64"
 	"fmt"
+	"io/ioutil"
+	"mime/multipart"
+	"net/http"
+	"path/filepath"
 
 	"yunion.io/x/jsonutils"
 
@@ -28,6 +35,7 @@ func init() {
 		Copyright string  `help:"The copyright"`
 		Email     string  `help:"The Email"`
 		Docs      *string `help:"the Docs website address"`
+		License   *string `help:"the license generator website address"`
 	}
 
 	R(&CopyrightUpdateOptions{}, "copyright-update", "update copyright", func(s *mcclient.ClientSession, args *CopyrightUpdateOptions) error {
@@ -38,6 +46,10 @@ func init() {
 		params := jsonutils.NewDict()
 		if args.Docs != nil {
 			params.Add(jsonutils.NewString(*args.Docs), "docs")
+		}
+
+		if args.License != nil {
+			params.Add(jsonutils.NewString(*args.License), "license")
 		}
 
 		if len(args.Copyright) > 0 {
@@ -54,6 +66,80 @@ func init() {
 		}
 
 		printObject(r)
+		return nil
+	})
+
+	type EnterpriseUpdateOptions struct {
+		Name      string `help:"Enterprise name"`
+		Copyright string `help:"The Email"`
+		Logo      string `help:"logo file path"`
+		LoginLogo string `help:"login page logo file path"`
+		Favicon   string `help:"favicon path"`
+	}
+
+	R(&EnterpriseUpdateOptions{}, "infos-update", "update enterprise info", func(s *mcclient.ClientSession, args *EnterpriseUpdateOptions) error {
+		var b bytes.Buffer
+		w := multipart.NewWriter(&b)
+		if len(args.Name) > 0 {
+			w.WriteField("name", args.Name)
+		}
+
+		if len(args.Copyright) > 0 {
+			w.WriteField("copyright", args.Copyright)
+		}
+
+		writeFile := func(filedName, filePath string) error {
+			if len(filePath) == 0 {
+				return nil
+			}
+
+			c, err := ioutil.ReadFile(filePath)
+			if err != nil {
+				return err
+			}
+
+			var v string
+			c64 := base64.StdEncoding.EncodeToString(c)
+			ext := filepath.Ext(filePath)
+			switch ext {
+			case ".png":
+				v = fmt.Sprintf("data:image/png;base64,%s", c64)
+			case ".jpg":
+				v = fmt.Sprintf("data:image/jpg;base64,%s", c64)
+			default:
+				return fmt.Errorf("only support png/jpg image")
+			}
+
+			err = w.WriteField(filedName, v)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		if err := writeFile("logo", args.Logo); err != nil {
+			return err
+		}
+
+		if err := writeFile("login_logo", args.LoginLogo); err != nil {
+			return err
+		}
+
+		if err := writeFile("favicon", args.Favicon); err != nil {
+			return err
+		}
+
+		header := make(http.Header)
+		header.Set("content-type", fmt.Sprintf("multipart/form-data; boundary=%s", w.Boundary()))
+		w.Close()
+
+		ret, err := modules.Info.Update(s, header, bufio.NewReader(&b))
+		if err != nil {
+			return err
+		}
+
+		printObject(ret)
 		return nil
 	})
 }

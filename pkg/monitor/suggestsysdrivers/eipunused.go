@@ -16,12 +16,15 @@ package suggestsysdrivers
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 
 	"yunion.io/x/onecloud/pkg/apis/monitor"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
@@ -30,29 +33,27 @@ import (
 )
 
 type EIPUnused struct {
-	monitor.EIPUnused
-}
-
-func (_ *EIPUnused) GetType() string {
-	return monitor.EIP_UN_USED
-}
-
-func (_ *EIPUnused) GetResourceType() string {
-	return string(monitor.EIP_MONITOR_RES_TYPE)
+	*baseDriver
 }
 
 func NewEIPUsedDriver() models.ISuggestSysRuleDriver {
 	return &EIPUnused{
-		EIPUnused: monitor.EIPUnused{},
+		baseDriver: newBaseDriver(
+			monitor.EIP_UNUSED,
+			monitor.EIP_MONITOR_RES_TYPE,
+			monitor.DELETE_DRIVER_ACTION,
+			monitor.EIP_MONITOR_SUGGEST,
+		),
 	}
 }
 
-func (dri *EIPUnused) ValidateSetting(input *monitor.SSuggestSysAlertSetting) error {
+func (drv *EIPUnused) ValidateSetting(input *monitor.SSuggestSysAlertSetting) error {
 	obj := new(monitor.EIPUnused)
 	input.EIPUnused = obj
 	return nil
 }
 
+<<<<<<< HEAD
 func (rule *EIPUnused) Run(instance *monitor.SSuggestSysAlertSetting) {
 	oldAlert, err := getLastAlerts(rule)
 	if err != nil {
@@ -66,9 +67,14 @@ func (rule *EIPUnused) Run(instance *monitor.SSuggestSysAlertSetting) {
 	}
 
 	DealAlertData(rule.GetType(), oldAlert, newAlert.Value())
+=======
+func (drv *EIPUnused) Run(rule *models.SSuggestSysRule, setting *monitor.SSuggestSysAlertSetting) {
+	Run(drv, rule, setting)
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 }
 
-func (rule *EIPUnused) getEIPUnused(instance *monitor.SSuggestSysAlertSetting) (*jsonutils.JSONArray, error) {
+func (drv *EIPUnused) GetLatestAlerts(rule *models.SSuggestSysRule, instance *monitor.SSuggestSysAlertSetting) ([]jsonutils.JSONObject, error) {
+	duration, _ := time.ParseDuration(rule.TimeFrom)
 	//处理逻辑
 	session := auth.GetAdminSession(context.Background(), "", "")
 	query := jsonutils.NewDict()
@@ -78,14 +84,32 @@ func (rule *EIPUnused) getEIPUnused(instance *monitor.SSuggestSysAlertSetting) (
 	if err != nil {
 		return nil, err
 	}
-	EIPUnsedArr := jsonutils.NewArray()
+	unused := make([]jsonutils.JSONObject, 0)
 	for _, row := range rtn.Data {
+		//Determine whether EIP is used
 		if row.ContainsIgnoreCases("associate_type") || row.ContainsIgnoreCases("associate_id") {
 			continue
 		}
-		suggestSysAlert, err := getSuggestSysAlertFromJson(row, rule)
+		id, _ := row.GetString("id")
+		logInput := logInput{
+			ObjId:   id,
+			ObjType: "eip",
+			Limit:   "0",
+			Scope:   "system",
+			Action:  db.ACT_DETACH,
+		}
+
+		latestTime, err := getResourceObjLatestUsedTime(row, logInput)
 		if err != nil {
-			return EIPUnsedArr, errors.Wrap(err, "getEIPUnused's alertData Unmarshal error")
+			continue
+		}
+		//Judge that the unused time is beyond the duration time
+		if time.Now().Add(-duration).Sub(latestTime) < 0 {
+			continue
+		}
+		suggestSysAlert, err := getSuggestSysAlertFromJson(row, drv)
+		if err != nil {
+			return unused, errors.Wrap(err, "getEIPUnused's alertData Unmarshal error")
 		}
 
 		input := &monitor.SSuggestSysAlertSetting{
@@ -96,30 +120,25 @@ func (rule *EIPUnused) getEIPUnused(instance *monitor.SSuggestSysAlertSetting) (
 			suggestSysAlert.MonitorConfig = jsonutils.Marshal(instance)
 		}
 
-		problem := jsonutils.NewDict()
-		problem.Add(jsonutils.NewString(rule.GetType()), "eip")
-		suggestSysAlert.Problem = problem
+		problems := []monitor.SuggestAlertProblem{
+			monitor.SuggestAlertProblem{
+				Type:        "eipUnused time",
+				Description: fmt.Sprintf("%.1fm", time.Now().Sub(latestTime).Minutes()),
+			},
+		}
+		suggestSysAlert.Problem = jsonutils.Marshal(&problems)
 
-		EIPUnsedArr.Add(jsonutils.Marshal(suggestSysAlert))
+		getResourceAmount(suggestSysAlert, latestTime)
+		unused = append(unused, jsonutils.Marshal(suggestSysAlert))
 	}
-	return EIPUnsedArr, nil
+	return unused, nil
 }
 
-func (rule *EIPUnused) DoSuggestSysRule(ctx context.Context, userCred mcclient.TokenCredential,
-	isStart bool) {
-	var instance *monitor.SSuggestSysAlertSetting
-	suggestSysSettingMap, err := models.SuggestSysRuleManager.FetchSuggestSysAlartSettings(rule.GetType())
-	if err != nil {
-		log.Errorln("DoSuggestSysRule error :", err)
-		return
-	}
-	if details, ok := suggestSysSettingMap[rule.GetType()]; ok {
-		instance = details.Setting
-	}
-	rule.Run(instance)
+func (drv *EIPUnused) DoSuggestSysRule(ctx context.Context, userCred mcclient.TokenCredential, isStart bool) {
+	doSuggestSysRule(ctx, userCred, isStart, drv)
 }
 
-func (rule *EIPUnused) Resolve(data *models.SSuggestSysAlert) error {
+func (drv *EIPUnused) Resolve(data *models.SSuggestSysAlert) error {
 	session := auth.GetAdminSession(context.Background(), "", "")
 	_, err := modules.Elasticips.Delete(session, data.ResId, jsonutils.NewDict())
 	if err != nil {
@@ -129,8 +148,9 @@ func (rule *EIPUnused) Resolve(data *models.SSuggestSysAlert) error {
 	return nil
 }
 
-func (rule *EIPUnused) StartResolveTask(ctx context.Context, userCred mcclient.TokenCredential,
+func (drv *EIPUnused) StartResolveTask(ctx context.Context, userCred mcclient.TokenCredential,
 	suggestSysAlert *models.SSuggestSysAlert, params *jsonutils.JSONDict) error {
+	suggestSysAlert.SetStatus(userCred, monitor.SUGGEST_ALERT_START_DELETE, "")
 	task, err := taskman.TaskManager.NewTask(ctx, "ResolveUnusedTask", suggestSysAlert, userCred, params, "", "", nil)
 	if err != nil {
 		return err

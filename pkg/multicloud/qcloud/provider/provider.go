@@ -53,6 +53,14 @@ func (self *SQcloudProviderFactory) GetMaxCloudEventKeepDays() int {
 	return 30
 }
 
+func (self *SQcloudProviderFactory) IsSupportCloudIdService() bool {
+	return true
+}
+
+func (self *SQcloudProviderFactory) IsSupportCreateCloudgroup() bool {
+	return true
+}
+
 func (self *SQcloudProviderFactory) ValidateChangeBandwidth(instanceId string, bandwidth int64) error {
 	if len(instanceId) == 0 {
 		return fmt.Errorf("Only changes to the binding machine's EIP bandwidth are supported")
@@ -164,6 +172,10 @@ func (self *SQcloudProvider) GetAccountId() string {
 	return self.client.GetAccountId()
 }
 
+func (self *SQcloudProvider) GetIamLoginUrl() string {
+	return self.client.GetIamLoginUrl()
+}
+
 func (self *SQcloudProvider) GetIRegions() []cloudprovider.ICloudRegion {
 	return self.client.GetIRegions()
 }
@@ -188,12 +200,76 @@ func (self *SQcloudProvider) GetIProjects() ([]cloudprovider.ICloudProject, erro
 	return self.client.GetIProjects()
 }
 
+func (self *SQcloudProvider) CreateIProject(name string) (cloudprovider.ICloudProject, error) {
+	return self.client.CreateIProject(name)
+}
+
 func (self *SQcloudProvider) GetStorageClasses(regionId string) []string {
 	return []string{
 		"STANDARD", "STANDARD_IA", "ARCHIVE",
 	}
 }
 
+func (self *SQcloudProvider) GetBucketCannedAcls(regionId string) []string {
+	return []string{
+		string(cloudprovider.ACLPrivate),
+		string(cloudprovider.ACLAuthRead),
+		string(cloudprovider.ACLPublicRead),
+	}
+}
+
+func (self *SQcloudProvider) GetObjectCannedAcls(regionId string) []string {
+	return []string{
+		string(cloudprovider.ACLPrivate),
+		string(cloudprovider.ACLAuthRead),
+		string(cloudprovider.ACLPublicRead),
+	}
+}
+
 func (self *SQcloudProvider) GetCapabilities() []string {
 	return self.client.GetCapabilities()
+}
+
+func (self *SQcloudProvider) CreateIClouduser(conf *cloudprovider.SClouduserCreateConfig) (cloudprovider.IClouduser, error) {
+	return self.client.CreateIClouduser(conf)
+}
+
+func (self *SQcloudProvider) GetICloudusers() ([]cloudprovider.IClouduser, error) {
+	return self.client.GetICloudusers()
+}
+
+func (self *SQcloudProvider) GetICloudgroups() ([]cloudprovider.ICloudgroup, error) {
+	return self.client.GetICloudgroups()
+}
+
+func (self *SQcloudProvider) GetICloudgroupByName(name string) (cloudprovider.ICloudgroup, error) {
+	return self.client.GetICloudgroupByName(name)
+}
+
+func (self *SQcloudProvider) CreateICloudgroup(name, desc string) (cloudprovider.ICloudgroup, error) {
+	return self.client.CreateICloudgroup(name, desc)
+}
+
+func (self *SQcloudProvider) GetISystemCloudpolicies() ([]cloudprovider.ICloudpolicy, error) {
+	return self.client.GetISystemCloudpolicies()
+}
+
+func (self *SQcloudProvider) GetICustomCloudpolicies() ([]cloudprovider.ICloudpolicy, error) {
+	return self.client.GetICustomCloudpolicies()
+}
+
+func (self *SQcloudProvider) GetIClouduserByName(name string) (cloudprovider.IClouduser, error) {
+	return self.client.GetIClouduserByName(name)
+}
+
+func (self *SQcloudProvider) CreateICloudpolicy(opts *cloudprovider.SCloudpolicyCreateOptions) (cloudprovider.ICloudpolicy, error) {
+	return self.client.CreateICloudpolicy(opts)
+}
+
+func (self *SQcloudProvider) GetSamlEntityId() string {
+	return cloudprovider.SAML_ENTITY_ID_QCLOUD
+}
+
+func (self *SQcloudProvider) GetSamlSpInitiatedLoginUrl(idpName string) string {
+	return self.client.GetSamlSpInitiatedLoginUrl(idpName)
 }

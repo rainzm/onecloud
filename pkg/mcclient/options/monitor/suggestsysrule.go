@@ -40,7 +40,7 @@ type SuggestRuleCreateOptions struct {
 	Name    string `help:"Name of the alert"`
 	Type    string `help:"Type of suggest rule" choices:"EIP_UNUSED|DISK_UNUSED|LB_UNUSED|SCALE_DOWN"`
 	Enabled bool   `help:"Enable rule"`
-	Period  string `help:"Period of suggest rule e.g. '5s', '1m'" default:"30s""`
+	Period  string `help:"Period of suggest rule e.g. '5s', '1m'" default:"30s"`
 }
 
 func (opt SuggestRuleCreateOptions) Params() (jsonutils.JSONObject, error) {
@@ -57,7 +57,7 @@ type SuggestRuleUpdateOptions struct {
 	SuggestSysRuleAlertSettingOptions
 	ID      string `help:"ID or name of the alert" json:"-"`
 	Name    string `help:"Name of the alert"`
-	Period  string `help:"Period of suggest rule e.g. '5s', '1m'" default:"30s""`
+	Period  string `help:"Period of suggest rule e.g. '5s', '1m'" default:"30s"`
 	Enabled bool   `help:"Enable rule"`
 	Type    string `help:"Type of suggest rule" choices:"EIP_UNUSED|"`
 }
@@ -73,16 +73,16 @@ func (opt SuggestRuleUpdateOptions) Params() (jsonutils.JSONObject, error) {
 
 func newSuggestSysAlertSetting(tp string) *monitor.SSuggestSysAlertSetting {
 	setting := new(monitor.SSuggestSysAlertSetting)
-	switch tp {
-	case monitor.EIP_UN_USED:
+	switch monitor.SuggestDriverType(tp) {
+	case monitor.EIP_UNUSED:
 		setting = &monitor.SSuggestSysAlertSetting{
 			EIPUnused: &monitor.EIPUnused{},
 		}
-	case monitor.DISK_UN_USED:
+	case monitor.DISK_UNUSED:
 		setting = &monitor.SSuggestSysAlertSetting{
 			DiskUnused: &monitor.DiskUnused{},
 		}
-	case monitor.LB_UN_USED:
+	case monitor.LB_UNUSED:
 		setting = &monitor.SSuggestSysAlertSetting{
 			LBUnused: &monitor.LBUnused{},
 		}

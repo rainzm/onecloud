@@ -162,20 +162,52 @@ func SharableManagerValidateCreateData(
 			input.IsPublic = &isPublic
 			reqScope = rbacutils.ScopeSystem
 		} else if input.PublicScope == string(rbacutils.ScopeDomain) {
+			if consts.GetNonDefaultDomainProjects() {
+				// only if non_default_domain_projects turned on, allow sharing to domain
+				input.IsPublic = &isPublic
+				reqScope = rbacutils.ScopeDomain
+			} else {
+				input.IsPublic = &isPublic
+				reqScope = rbacutils.ScopeSystem
+			}
+		} else if input.IsPublic != nil && *input.IsPublic && len(input.PublicScope) == 0 {
+			// backward compatible, if only is_public is true, make it share to system
 			input.IsPublic = &isPublic
+<<<<<<< HEAD
 			reqScope = rbacutils.ScopeDomain
 		} else if input.IsPublic != nil && *input.IsPublic && len(input.PublicScope) == 0 {
 			// backward compatible, if only is_public is true, make it share to system
 			input.IsPublic = &isPublic
 			input.PublicScope = string(rbacutils.ScopeSystem)
+=======
+			input.PublicScope = string(rbacutils.ScopeSystem)
+			reqScope = rbacutils.ScopeSystem
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 		} else {
 			input.IsPublic = nil
-			input.PublicScope = string(rbacutils.ScopeNone)
+			input.PublicScope = "" // string(rbacutils.ScopeNone)
 		}
 	case rbacutils.ScopeDomain:
-		if input.PublicScope == string(rbacutils.ScopeSystem) {
+		if consts.GetNonDefaultDomainProjects() {
+			// only if non_default_domain_projects turned on, allow sharing domain resources
+			if input.PublicScope == string(rbacutils.ScopeSystem) {
+				input.IsPublic = &isPublic
+				reqScope = rbacutils.ScopeSystem
+			} else if input.IsPublic != nil && *input.IsPublic && len(input.PublicScope) == 0 {
+				// backward compatible, if only is_public is true, make it share to system
+				input.IsPublic = &isPublic
+				input.PublicScope = string(rbacutils.ScopeSystem)
+				reqScope = rbacutils.ScopeSystem
+			} else {
+				input.IsPublic = nil
+				input.PublicScope = "" // string(rbacutils.ScopeNone)
+			}
+		} else {
+			// if non_default_domain_projects turned off, all domain resources shared to system
 			input.IsPublic = &isPublic
+			input.PublicScope = string(rbacutils.ScopeSystem)
 			reqScope = rbacutils.ScopeSystem
+<<<<<<< HEAD
 		} else if input.IsPublic != nil && *input.IsPublic && len(input.PublicScope) == 0 {
 			// backward compatible, if only is_public is true, make it share to system
 			input.IsPublic = &isPublic
@@ -183,13 +215,17 @@ func SharableManagerValidateCreateData(
 		} else {
 			input.IsPublic = nil
 			input.PublicScope = string(rbacutils.ScopeNone)
+=======
+>>>>>>> 853153c739856a9f3e9a1127ba18b6979f2a221a
 		}
 	default:
 		return input, errors.Wrap(httperrors.ErrInputParameter, "the resource is not sharable")
 	}
-	allowScope := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionPerform, "public")
-	if reqScope.HigherThan(allowScope) {
-		return input, errors.Wrapf(httperrors.ErrNotSufficientPrivilege, "require %s allow %s", reqScope, allowScope)
+	if input.IsPublic != nil && *input.IsPublic {
+		allowScope := policy.PolicyManager.AllowScope(userCred, consts.GetServiceType(), manager.KeywordPlural(), policy.PolicyActionPerform, "public")
+		if reqScope.HigherThan(allowScope) {
+			return input, errors.Wrapf(httperrors.ErrNotSufficientPrivilege, "require %s allow %s", reqScope, allowScope)
+		}
 	}
 	return input, nil
 }
@@ -387,11 +423,11 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 		return errors.Wrapf(httperrors.ErrNotSupported, "cannot share %s resource to %s", resourceScope, targetScope)
 	}
 
-	if len(input.SharedProjects) > 0 && len(input.SharedDomains) > 0 {
+	if len(input.SharedProjectIds) > 0 && len(input.SharedDomainIds) > 0 {
 		return errors.Wrap(httperrors.ErrInputParameter, "cannot set shared_projects and shared_domains at the same time")
-	} else if len(input.SharedProjects) > 0 && targetScope != rbacutils.ScopeProject {
+	} else if len(input.SharedProjectIds) > 0 && targetScope != rbacutils.ScopeProject {
 		targetScope = rbacutils.ScopeProject
-	} else if len(input.SharedDomains) > 0 && targetScope != rbacutils.ScopeDomain {
+	} else if len(input.SharedDomainIds) > 0 && targetScope != rbacutils.ScopeDomain {
 		targetScope = rbacutils.ScopeDomain
 	}
 
@@ -411,14 +447,17 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 		// if len(input.SharedProjects) == 0 {
 		//	return errors.Wrap(httperrors.ErrEmptyRequest, "empty shared target project list")
 		// }
-		shareResult.SharedProjects, err = SharedResourceManager.shareToTarget(ctx, userCred, model, SharedTargetProject, input.SharedProjects, nil, nil)
+		shareResult.SharedProjectIds, err = SharedResourceManager.shareToTarget(ctx, userCred, model, SharedTargetProject, input.SharedProjectIds, nil, nil)
 		if err != nil {
 			return errors.Wrap(err, "shareToTarget")
 		}
-		if len(shareResult.SharedProjects) == 0 {
+		if len(shareResult.SharedProjectIds) == 0 {
 			targetScope = rbacutils.ScopeNone
 		}
 	case rbacutils.ScopeDomain:
+		if !consts.GetNonDefaultDomainProjects() {
+			return errors.Wrap(httperrors.ErrForbidden, "not allow to share to domain when non_default_domain_projects turned off")
+		}
 		if len(requireIds) == 0 {
 			return errors.Wrap(httperrors.ErrForbidden, "require to be shared to system")
 		}
@@ -426,11 +465,11 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 		if err != nil {
 			return errors.Wrap(err, "shareToTarget clean projects")
 		}
-		shareResult.SharedDomains, err = SharedResourceManager.shareToTarget(ctx, userCred, model, SharedTargetDomain, input.SharedDomains, candidateIds, requireIds)
+		shareResult.SharedDomainIds, err = SharedResourceManager.shareToTarget(ctx, userCred, model, SharedTargetDomain, input.SharedDomainIds, candidateIds, requireIds)
 		if err != nil {
 			return errors.Wrap(err, "shareToTarget add domains")
 		}
-		if len(shareResult.SharedDomains) == 0 && resourceScope == rbacutils.ScopeDomain {
+		if len(shareResult.SharedDomainIds) == 0 && resourceScope == rbacutils.ScopeDomain {
 			targetScope = rbacutils.ScopeNone
 		}
 	case rbacutils.ScopeSystem:
@@ -473,6 +512,11 @@ func SharablePerformPublic(model ISharableBaseModel, ctx context.Context, userCr
 func SharablePerformPrivate(model ISharableBaseModel, ctx context.Context, userCred mcclient.TokenCredential) error {
 	if !model.GetIsPublic() && model.GetPublicScope() == rbacutils.ScopeNone {
 		return nil
+	}
+
+	resourceScope := model.GetModelManager().ResourceScope()
+	if resourceScope == rbacutils.ScopeDomain && !consts.GetNonDefaultDomainProjects() {
+		return errors.Wrap(httperrors.ErrForbidden, "not allow to private domain resource")
 	}
 
 	requireIds := model.GetRequiredSharedDomainIds()
@@ -537,7 +581,9 @@ func SharableModelIsShared(model ISharableBaseModel) bool {
 	}
 	switch model.GetPublicScope() {
 	case rbacutils.ScopeSystem:
-		return true
+		if model.GetIsPublic() {
+			return true
+		}
 	case rbacutils.ScopeDomain:
 		if model.GetModelManager().ResourceScope() == rbacutils.ScopeProject {
 			return true
@@ -549,7 +595,8 @@ func SharableModelIsShared(model ISharableBaseModel) bool {
 func SharableModelCustomizeCreate(model ISharableBaseModel, ctx context.Context, userCred mcclient.TokenCredential, ownerId mcclient.IIdentityProvider, query jsonutils.JSONObject, data jsonutils.JSONObject) error {
 	if !data.Contains("public_scope") {
 		resScope := model.GetModelManager().ResourceScope()
-		if resScope == rbacutils.ScopeDomain {
+		if resScope == rbacutils.ScopeDomain && consts.GetNonDefaultDomainProjects() {
+			// only if non_default_domain_projects turned on, do the following
 			isManaged := false
 			if managedModel, ok := model.(IManagedResourceBase); ok {
 				isManaged = managedModel.IsManaged()

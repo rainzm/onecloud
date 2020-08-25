@@ -15,9 +15,11 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"yunion.io/x/pkg/tristate"
 	"yunion.io/x/pkg/util/wait"
 
+	identityapi "yunion.io/x/onecloud/pkg/apis/identity"
 	"yunion.io/x/onecloud/pkg/apis/monitor"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/httperrors"
@@ -41,6 +44,7 @@ import (
 
 var (
 	DataSourceManager *SDataSourceManager
+	compile           = regexp.MustCompile(`\w{8}(-\w{4}){3}-\w{12}`)
 )
 
 const (
@@ -98,7 +102,7 @@ func (man *SDataSourceManager) initDefaultDataSource(ctx context.Context) error 
 			log.Errorf("get empty public session for region %s", region)
 			return
 		}
-		url, err := s.GetServiceURL("influxdb", auth.PublicEndpointType)
+		url, err := s.GetServiceURL("influxdb", identityapi.EndpointInterfacePublic)
 		if err != nil {
 			log.Errorf("get influxdb public url: %v", err)
 			return
@@ -108,7 +112,7 @@ func (man *SDataSourceManager) initDefaultDataSource(ctx context.Context) error 
 			Url:  url,
 		}
 		ds.Name = DefaultDataSource
-		if err := man.TableSpec().Insert(ds); err != nil {
+		if err := man.TableSpec().Insert(ctx, ds); err != nil {
 			log.Errorf("insert default influxdb: %v", err)
 		}
 	}
@@ -189,7 +193,9 @@ func (self *SDataSourceManager) GetDatabases() (jsonutils.JSONObject, error) {
 	return ret, nil
 }
 
-func (self *SDataSourceManager) GetMeasurements(query jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+func (self *SDataSourceManager) GetMeasurements(query jsonutils.JSONObject,
+	measurementFilter, tagFilter string) (jsonutils.JSONObject,
+	error) {
 	ret := jsonutils.NewDict()
 	database, _ := query.GetString("database")
 	if database == "" {
@@ -201,21 +207,34 @@ func (self *SDataSourceManager) GetMeasurements(query jsonutils.JSONObject) (jso
 	}
 	db := influxdb.NewInfluxdb(dataSource.Url)
 	db.SetDatabase(database)
-	dbRtn, err := db.Query(fmt.Sprintf("SHOW MEASUREMENTS ON %s", database))
+	var buffer bytes.Buffer
+	buffer.WriteString(" SHOW MEASUREMENTS ON ")
+	buffer.WriteString(database)
+	if len(measurementFilter) != 0 {
+		buffer.WriteString(" WITH ")
+		buffer.WriteString(measurementFilter)
+	}
+	if len(tagFilter) != 0 {
+		buffer.WriteString(" WHERE ")
+		buffer.WriteString(tagFilter)
+	}
+	dbRtn, err := db.Query(buffer.String())
 	if err != nil {
 		return jsonutils.JSONNull, errors.Wrap(err, "SHOW MEASUREMENTS")
 	}
-	res := dbRtn[0][0]
-	measurements := make([]monitor.InfluxMeasurement, len(res.Values))
-	for i := range res.Values {
-		tmpDict := jsonutils.NewDict()
-		tmpDict.Add(res.Values[i][0], "measurement")
-		err := tmpDict.Unmarshal(&measurements[i])
-		if err != nil {
-			return jsonutils.JSONNull, errors.Wrap(err, "measurement unmarshal error")
+	if len(dbRtn) > 0 && len(dbRtn[0]) > 0 {
+		res := dbRtn[0][0]
+		measurements := make([]monitor.InfluxMeasurement, len(res.Values))
+		for i := range res.Values {
+			tmpDict := jsonutils.NewDict()
+			tmpDict.Add(res.Values[i][0], "measurement")
+			err := tmpDict.Unmarshal(&measurements[i])
+			if err != nil {
+				return jsonutils.JSONNull, errors.Wrap(err, "measurement unmarshal error")
+			}
 		}
+		ret.Add(jsonutils.Marshal(&measurements), "measurements")
 	}
-	ret.Add(jsonutils.Marshal(&measurements), "measurements")
 	return ret, nil
 }
 
@@ -252,6 +271,68 @@ func (self *SDataSourceManager) GetMetricMeasurement(query jsonutils.JSONObject)
 
 }
 
+type InfluxdbSubscription struct {
+	SubName  string
+	DataBase string
+	//retention policy
+	Rc  string
+	Url string
+}
+
+func (self *SDataSourceManager) AddSubscription(subscription InfluxdbSubscription) error {
+
+	query := fmt.Sprintf("CREATE SUBSCRIPTION %s ON %s.%s DESTINATIONS ALL %s",
+		jsonutils.NewString(subscription.SubName).String(),
+		jsonutils.NewString(subscription.DataBase).String(),
+		jsonutils.NewString(subscription.Rc).String(),
+		strings.ReplaceAll(jsonutils.NewString(subscription.Url).String(), "\"", "'"),
+	)
+	dataSource, err := self.GetDefaultSource()
+	if err != nil {
+		return errors.Wrap(err, "s.GetDefaultSource")
+	}
+
+	db := influxdb.NewInfluxdbWithDebug(dataSource.Url, true)
+	db.SetDatabase(subscription.DataBase)
+
+	rtn, err := db.GetQuery(query)
+	if err != nil {
+		return err
+	}
+	for _, result := range rtn {
+		for _, obj := range result {
+			objJson := jsonutils.Marshal(&obj)
+			log.Errorln(objJson.String())
+		}
+	}
+	return nil
+}
+
+func (self *SDataSourceManager) DropSubscription(subscription InfluxdbSubscription) error {
+	query := fmt.Sprintf("DROP SUBSCRIPTION %s ON %s.%s", jsonutils.NewString(subscription.SubName).String(),
+		jsonutils.NewString(subscription.DataBase).String(),
+		jsonutils.NewString(subscription.Rc).String(),
+	)
+	dataSource, err := self.GetDefaultSource()
+	if err != nil {
+		return errors.Wrap(err, "s.GetDefaultSource")
+	}
+
+	db := influxdb.NewInfluxdb(dataSource.Url)
+	db.SetDatabase(subscription.DataBase)
+	rtn, err := db.Query(query)
+	if err != nil {
+		return err
+	}
+	for _, result := range rtn {
+		for _, obj := range result {
+			objJson := jsonutils.Marshal(&obj)
+			log.Errorln(objJson.String())
+		}
+	}
+	return nil
+}
+
 func getAttributesOnMeasurement(database, tp string, output *monitor.InfluxMeasurement, db *influxdb.SInfluxdb) error {
 	dbRtn, err := db.Query(fmt.Sprintf("SHOW %s KEYS ON %s FROM %s", tp, database, output.Measurement))
 	if err != nil {
@@ -261,6 +342,10 @@ func getAttributesOnMeasurement(database, tp string, output *monitor.InfluxMeasu
 	tmpDict := jsonutils.NewDict()
 	tmpArr := jsonutils.NewArray()
 	for i := range res.Values {
+		v, _ := res.Values[i][0].(*jsonutils.JSONString).GetString()
+		if filterTagKey(v) {
+			continue
+		}
 		tmpArr.Add(res.Values[i][0])
 	}
 	tmpDict.Add(tmpArr, res.Columns[0])
@@ -272,21 +357,56 @@ func getAttributesOnMeasurement(database, tp string, output *monitor.InfluxMeasu
 }
 
 func getTagValue(database string, output *monitor.InfluxMeasurement, db *influxdb.SInfluxdb) error {
-
-	dbRtn, err := db.Query(fmt.Sprintf("SHOW TAG VALUES ON %s FROM %s WITH KEY IN (%s)", database, output.Measurement, strings.Join(output.TagKey, ",")))
+	if len(output.TagKey) == 0 {
+		return nil
+	}
+	tagKeyStr := jsonutils.NewStringArray(output.TagKey).String()
+	tagKeyStr = tagKeyStr[1 : len(tagKeyStr)-1]
+	dbRtn, err := db.Query(fmt.Sprintf("SHOW TAG VALUES ON %s FROM %s WITH KEY IN (%s)", database, output.Measurement, tagKeyStr))
 	if err != nil {
-		return errors.Wrap(err, "SHOW MEASUREMENTS")
+		return err
 	}
 	res := dbRtn[0][0]
 	tagValue := make(map[string][]string, 0)
+	keys := strings.Join(output.TagKey, ",")
 	for i := range res.Values {
-		val := res.Values[i][0].(*jsonutils.JSONString)
-		if _, ok := tagValue[val.Value()]; !ok {
-			tagValue[val.Value()] = make([]string, 0)
+		val, _ := res.Values[i][0].(*jsonutils.JSONString).GetString()
+		if !strings.Contains(keys, val) {
+			continue
 		}
-		tag := res.Values[i][1].(*jsonutils.JSONString)
-		tagValue[val.Value()] = append(tagValue[val.Value()], tag.Value())
+		if _, ok := tagValue[val]; !ok {
+			tagValue[val] = make([]string, 0)
+		}
+		tag, _ := res.Values[i][1].(*jsonutils.JSONString).GetString()
+		if filterTagValue(tag) {
+			delete(tagValue, val)
+			continue
+		}
+		tagValue[val] = append(tagValue[val], tag)
 	}
 	output.TagValue = tagValue
+	//TagKey == TagValue.keys
+	tagK := make([]string, 0)
+	for tag, _ := range output.TagValue {
+		tagK = append(tagK, tag)
+	}
+	output.TagKey = tagK
 	return nil
+}
+
+func filterTagKey(key string) bool {
+	if strings.Contains(key, "_id") {
+		return true
+	}
+	if key == "perf_instance" {
+		return true
+	}
+	return false
+}
+
+func filterTagValue(val string) bool {
+	if compile.MatchString(val) {
+		return true
+	}
+	return false
 }

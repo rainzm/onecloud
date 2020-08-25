@@ -17,7 +17,6 @@ package models
 import (
 	"yunion.io/x/log"
 
-	"yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	mcclient_modulebase "yunion.io/x/onecloud/pkg/mcclient/modulebase"
 	mcclient_modules "yunion.io/x/onecloud/pkg/mcclient/modules"
@@ -26,14 +25,18 @@ import (
 
 type (
 	Vpcs               map[string]*Vpc
+	Wires              map[string]*Wire
 	Networks           map[string]*Network
 	Guests             map[string]*Guest
 	Hosts              map[string]*Host
 	SecurityGroups     map[string]*SecurityGroup
 	SecurityGroupRules map[string]*SecurityGroupRule
+	Elasticips         map[string]*Elasticip
 
 	Guestnetworks  map[string]*Guestnetwork  // key: guestId/ifname
 	Guestsecgroups map[string]*Guestsecgroup // key: guestId/secgroupId
+
+	DnsRecords map[string]*DnsRecord
 )
 
 func (set Vpcs) ModelManager() mcclient_modulebase.IBaseManager {
@@ -46,9 +49,6 @@ func (set Vpcs) NewModel() db.IModel {
 
 func (set Vpcs) AddModel(i db.IModel) {
 	m := i.(*Vpc)
-	if m.Id == compute.DEFAULT_VPC_ID {
-		return
-	}
 	set[m.Id] = m
 }
 
@@ -60,16 +60,36 @@ func (set Vpcs) Copy() apihelper.IModelSet {
 	return setCopy
 }
 
+func (ms Vpcs) joinWires(subEntries Wires) bool {
+	correct := true
+	for _, subEntry := range subEntries {
+		vpcId := subEntry.VpcId
+		m, ok := ms[vpcId]
+		if !ok {
+			log.Warningf("vpc_id %s of wire %s(%s) is not present", vpcId, subEntry.Name, subEntry.Id)
+			correct = false
+			continue
+		}
+		subEntry.Vpc = m
+		m.Wire = subEntry
+	}
+	return correct
+}
+
 func (ms Vpcs) joinNetworks(subEntries Networks) bool {
 	for _, m := range ms {
 		m.Networks = Networks{}
 	}
 	correct := true
 	for subId, subEntry := range subEntries {
-		id := subEntry.VpcId
-		if id == compute.DEFAULT_VPC_ID {
+		wire := subEntry.Wire
+		if wire == nil {
+			// ensured by vpcs.joinWires
+			log.Warningf("network %s(%s) has no wire", subEntry.Name, subEntry.Id)
+			correct = false
 			continue
 		}
+		id := wire.VpcId
 		m, ok := ms[id]
 		if !ok {
 			// let it go.  By the time the subnet has externalId or
@@ -87,6 +107,45 @@ func (ms Vpcs) joinNetworks(subEntries Networks) bool {
 		}
 		subEntry.Vpc = m
 		m.Networks[subId] = subEntry
+	}
+	return correct
+}
+
+func (set Wires) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.Wires
+}
+
+func (set Wires) NewModel() db.IModel {
+	return &Wire{}
+}
+
+func (set Wires) AddModel(i db.IModel) {
+	m := i.(*Wire)
+	set[m.Id] = m
+}
+
+func (set Wires) Copy() apihelper.IModelSet {
+	setCopy := Wires{}
+	for id, el := range set {
+		setCopy[id] = el.Copy()
+	}
+	return setCopy
+}
+
+func (set Wires) IncludeEmulated() bool {
+	return true
+}
+
+func (ms Wires) joinNetworks(subEntries Networks) bool {
+	correct := true
+	for _, subEntry := range subEntries {
+		wireId := subEntry.WireId
+		m, ok := ms[wireId]
+		if !ok {
+			correct = false
+			continue
+		}
+		subEntry.Wire = m
 	}
 	return correct
 }
@@ -237,6 +296,30 @@ func (ms Networks) joinGuestnetworks(subEntries Guestnetworks) bool {
 	return true
 }
 
+func (ms Networks) joinElasticips(subEntries Elasticips) bool {
+	for _, m := range ms {
+		m.Elasticips = Elasticips{}
+	}
+	correct := true
+	for _, subEntry := range subEntries {
+		netId := subEntry.NetworkId
+		m, ok := ms[netId]
+		if !ok {
+			log.Warningf("eip %s(%s): network %s not found", subEntry.Name, subEntry.Id, netId)
+			correct = false
+			continue
+		}
+		if _, ok := m.Elasticips[subEntry.Id]; ok {
+			log.Warningf("elasticip %s(%s) already joined", subEntry.Name, subEntry.Id)
+			correct = false
+			continue
+		}
+		subEntry.Network = m
+		m.Elasticips[subEntry.Id] = subEntry
+	}
+	return correct
+}
+
 func (set Guestnetworks) ModelManager() mcclient_modulebase.IBaseManager {
 	return &mcclient_modules.Servernetworks
 }
@@ -274,6 +357,33 @@ func (set Guestnetworks) joinGuests(subEntries Guests) bool {
 		gn.Guest = g
 	}
 	return true
+}
+
+func (set Guestnetworks) joinElasticips(subEntries Elasticips) bool {
+	correct := true
+	for _, gn := range set {
+		eipId := gn.EipId
+		if eipId == "" {
+			continue
+		}
+		eip, ok := subEntries[eipId]
+		if !ok {
+			log.Warningf("guestnetwork %s(%s): eip %s not found", gn.GuestId, gn.Ifname, eipId)
+			correct = false
+			continue
+		}
+		if eip.Guestnetwork != nil {
+			if eip.Guestnetwork != gn {
+				log.Errorf("eip %s associated to more than 1 guestnetwork: %s(%s), %s(%s)", eipId,
+					eip.Guestnetwork.GuestId, eip.Guestnetwork.Ifname, gn.GuestId, gn.Ifname)
+				correct = false
+			}
+			continue
+		}
+		eip.Guestnetwork = gn
+		gn.Elasticip = eip
+	}
+	return correct
 }
 
 func (set SecurityGroups) ModelManager() mcclient_modulebase.IBaseManager {
@@ -402,4 +512,46 @@ func (set Guestsecgroups) join(secgroups SecurityGroups, guests Guests) bool {
 	c0 := set.joinSecurityGroups(secgroups)
 	c1 := set.joinGuests(guests)
 	return c0 && c1
+}
+
+func (set Elasticips) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.Elasticips
+}
+
+func (set Elasticips) NewModel() db.IModel {
+	return &Elasticip{}
+}
+
+func (set Elasticips) AddModel(i db.IModel) {
+	m := i.(*Elasticip)
+	set[m.Id] = m
+}
+
+func (set Elasticips) Copy() apihelper.IModelSet {
+	setCopy := Elasticips{}
+	for id, el := range set {
+		setCopy[id] = el.Copy()
+	}
+	return setCopy
+}
+
+func (set DnsRecords) ModelManager() mcclient_modulebase.IBaseManager {
+	return &mcclient_modules.DNSRecords
+}
+
+func (set DnsRecords) NewModel() db.IModel {
+	return &DnsRecord{}
+}
+
+func (set DnsRecords) AddModel(i db.IModel) {
+	m := i.(*DnsRecord)
+	set[m.Id] = m
+}
+
+func (set DnsRecords) Copy() apihelper.IModelSet {
+	setCopy := DnsRecords{}
+	for id, el := range set {
+		setCopy[id] = el.Copy()
+	}
+	return setCopy
 }
