@@ -125,8 +125,6 @@ func (self *SESXiGuestDriver) ValidateCreateData(ctx context.Context, userCred m
 	return input, nil
 }
 
-}
-
 func (self *SESXiGuestDriver) GetMinimalSysDiskSizeGb() int {
 	return options.Options.DefaultDiskSizeMB / 1024
 }
