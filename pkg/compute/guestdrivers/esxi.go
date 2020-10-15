@@ -79,6 +79,54 @@ func (self *SESXiGuestDriver) GetDefaultSysDiskBackend() string {
 	return api.STORAGE_LOCAL
 }
 
+func (self *SESXiGuestDriver) ValidateCreateData(ctx context.Context, userCred mcclient.TokenCredential,
+	input *api.ServerCreateInput) (*api.ServerCreateInput, error) {
+
+	log.Infof("validateCreateData for esxi")
+
+	if !options.Options.LockStorageFromCachedimage {
+		return input, nil
+	}
+
+	var (
+		diskConfig *api.DiskConfig
+		image      *cloudprovider.SImage
+		err        error
+	)
+	diskConfig = input.Disks[0]
+	image, err = models.CachedimageManager.GetImageById(ctx, userCred, diskConfig.ImageId, false)
+	if err != nil {
+		image, err = models.CachedimageManager.GetImageByName(ctx, userCred, diskConfig.ImageId, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if options.Options.LockStorageFromCachedimage && len(image.ExternalId) > 0 {
+		obj, err := models.CachedimageManager.FetchById(image.Id)
+		if err != nil {
+			return input, errors.Wrapf(err, "unable to fetch cachedimage %q", image.Id)
+		}
+		cachedimage := obj.(*models.SCachedimage)
+		storages, err := cachedimage.GetStorages()
+		if err != nil {
+			return input, errors.Wrapf(err, "unable to get storages of cachedimage %q", image.Id)
+		}
+		if len(storages) == 0 {
+			log.Warningf("there no storage associated with cachedimage %q", image.Id)
+			return input, nil
+		}
+		if len(storages) > 1 {
+			log.Warningf("there are multiple storageCache associated with caheimage %q", image.Id)
+		}
+		sid := storages[0].GetId()
+		log.Infof("use storage %q in where cachedimage %q", sid, image.Id)
+		diskConfig.Storage = sid
+	}
+	return input, nil
+}
+
+}
+
 func (self *SESXiGuestDriver) GetMinimalSysDiskSizeGb() int {
 	return options.Options.DefaultDiskSizeMB / 1024
 }
@@ -194,7 +242,7 @@ func (self *SESXiGuestDriver) GetJsonDescAtHost(ctx context.Context, userCred mc
 			return desc, errors.Wrap(err, "storageCaches.GetHosts")
 		}
 		for i := range hosts {
-			if host.GetId() == hosts[i].GetId()	{
+			if host.GetId() == hosts[i].GetId() {
 				storageCacheHost = &hosts[i]
 			}
 		}
