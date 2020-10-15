@@ -535,6 +535,18 @@ func (manager *SCachedimageManager) newFromCloudImage(ctx context.Context, userC
 	return &cachedImage, nil
 }
 
+func (image *SCachedimage) GetStorages() ([]SStorage, error) {
+	sq := StorageManager.Query()
+	storagecacheimageSubq := StoragecachedimageManager.Query("storagecache_id").Equals("cachedimage_id", image.GetId()).SubQuery()
+	sq.Join(storagecacheimageSubq, sqlchemy.Equals(sq.Field("storagecache_id"), storagecacheimageSubq.Field("storagecache_id")))
+	storages := make([]SStorage, 0, 1)
+	err := db.FetchModelObjects(StorageManager, sq, &storages)
+	if err != nil {
+		return nil, errors.Wrap(err, "FetchModelObjects")
+	}
+	return storages, nil
+}
+
 func (image *SCachedimage) requestRefreshExternalImage(ctx context.Context, userCred mcclient.TokenCredential) (*cloudprovider.SImage, error) {
 	caches := image.getValidStoragecache()
 	if caches == nil || len(caches) == 0 {

@@ -1724,6 +1724,27 @@ func fillDiskConfigByImage(ctx context.Context, userCred mcclient.TokenCredentia
 		if diskConfig.SizeMb != api.DISK_SIZE_AUTOEXTEND && diskConfig.SizeMb < image.MinDiskMB {
 			diskConfig.SizeMb = image.MinDiskMB // MB
 		}
+		if options.Options.LockStorageFromCachedimage && len(image.ExternalId) > 0 {
+			obj, err := CachedimageManager.FetchById(image.Id)
+			if err != nil {
+				return errors.Wrapf(err, "unable to fetch cachedimage %q", image.Id)
+			}
+			cachedimage := obj.(*SCachedimage)
+			storages, err := cachedimage.GetStorages()
+			if err != nil {
+				return errors.Wrapf(err, "unable to get storages of cachedimage %q", image.Id)
+			}
+			if len(storages) == 0 {
+				log.Warningf("there no storage associated with cachedimage %q", image.Id)
+				return nil
+			}
+			if len(storages) > 1 {
+				log.Warningf("there are multiple storageCache associated with caheimage %q", image.Id)
+			}
+			sid := storages[0].GetId()
+			log.Infof("use storage %q in where cachedimage %q", sid, image.Id)
+			diskConfig.Storage = sid
+		}
 	}
 	return nil
 }
