@@ -437,24 +437,24 @@ func (s *SSubscription) getActions() []notify.SAction {
 	return actions
 }
 
-const (
-	ResourceServer                  = "server"
-	ResourceScalingGroup            = "scalinggroup"
-	ResourceImage                   = "image"
-	ResourceDisk                    = "disk"
-	ResourceSnapshot                = "snapshot"
-	ResourceInstanceSnapshot        = "instance_snapshot"
-	ResourceSnapshotPolicy          = "snapshotpolicy"
-	ResourceNetwork                 = "network"
-	ResourceEip                     = "eip"
-	ResourceSecgroup                = "secgroup"
-	ResourceLoadbalancer            = "loadbalancer"
-	ResourceLoadbalanceracl         = "loadbalanceracl"
-	ResourceLoadbalancercertificate = "loadbalancercertificate"
-	ResourceBucket                  = "bucket"
-	ResourceDbinstance              = "dbinstance"
-	ResourceElasticcache            = "elasticcache"
-)
+func (sm *SSubscriptionManager) SubsciptionByEvent(eventStr string, advanceDays int) ([]SSubscription, error) {
+	event, err := parseEvent(eventStr)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to parse event %q", event)
+	}
+	resourceV := converter.resourceValue(event.ResourceType())
+	actionV := converter.actionValue(event.Action())
+	q := sm.Query().Equals("advance_days", advanceDays)
+	q = q.Filter(sqlchemy.LT(sqlchemy.AND_Val("", q.Field("resources"), 1<<resourceV), 0))
+	q = q.Filter(sqlchemy.LT(sqlchemy.AND_Val("", q.Field("resources"), 1<<actionV), 0))
+	var subscriptions []SSubscription
+	err = db.FetchModelObjects(sm, q, &subscriptions)
+	if err != nil {
+		q.DebugQuery()
+		return nil, errors.Wrap(err, "unable to FetchModelObjects")
+	}
+	return subscriptions, nil
+}
 
 func init() {
 	converter = &sConverter{
@@ -486,6 +486,8 @@ func init() {
 		notify.ActionDelete,
 		notify.ActionPendingDelete,
 		notify.ActionUpdate,
+		notify.ActionRebuildRoot,
+		notify.ActionResetPassword,
 		notify.ActionChangeConfig,
 		notify.ActionExpiredRelease,
 		notify.ActionExecute,

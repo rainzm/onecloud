@@ -146,8 +146,14 @@ func (srm *SSubscriptionReceiverManager) getReceivers(ctx context.Context, ssid 
 	case ScopeSystem:
 		query.Set("include_system", jsonutils.JSONNull)
 	case ScopeDomain:
+		if len(projectDomainId) == 0 {
+			return nil, fmt.Errorf("need projectDomainId")
+		}
 		query.Set("project_domains", jsonutils.NewStringArray([]string{projectDomainId}))
 	case ScopeProject:
+		if len(projectId) == 0 {
+			return nil, fmt.Errorf("need projectId")
+		}
 		query.Set("projects", jsonutils.NewStringArray([]string{projectId}))
 	}
 	s := auth.GetAdminSession(ctx, "", "")
