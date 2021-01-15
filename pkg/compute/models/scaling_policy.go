@@ -29,7 +29,9 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/httperrors"
+	"yunion.io/x/onecloud/pkg/i18n"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 	"yunion.io/x/onecloud/pkg/util/stringutils2"
@@ -424,6 +426,33 @@ func (sp *SScalingPolicy) PerformTrigger(ctx context.Context, userCred mcclient.
 		return nil, errors.Wrap(err, "ScalingPolicy.Scale")
 	}
 	return nil, err
+}
+
+var spI18nTable i18n.Table
+
+func init() {
+	spI18nTable.Set(api.TRIGGER_ALARM, i18n.NewTableEntry().EN("alarm").CN("告警"))
+	spI18nTable.Set(api.TRIGGER_TIMING, i18n.NewTableEntry().EN("timing").CN("定时"))
+	spI18nTable.Set(api.TRIGGER_CYCLE, i18n.NewTableEntry().EN("cycle").CN("周期"))
+	spI18nTable.Set(api.ACTION_ADD, i18n.NewTableEntry().EN("add").CN("增加"))
+	spI18nTable.Set(api.ACTION_REMOVE, i18n.NewTableEntry().EN("remove").CN("减少"))
+	spI18nTable.Set(api.ACTION_SET, i18n.NewTableEntry().EN("set as").CN("设置为"))
+	spI18nTable.Set(api.UNIT_ONE, i18n.NewTableEntry().EN("").CN("个"))
+	spI18nTable.Set(api.UNIT_PERCENT, i18n.NewTableEntry().EN("%").CN("%"))
+}
+
+func (sp *SScalingPolicy) eventDetails(ctx context.Context, details *jsonutils.JSONDict) {
+	details.Set("trigger_type_display", jsonutils.NewString(spI18nTable.Lookup(ctx, sp.TriggerType)))
+	details.Set("action_display", jsonutils.NewString(spI18nTable.Lookup(ctx, sp.Action)))
+	details.Set("unit_display", jsonutils.NewString(spI18nTable.Lookup(ctx, sp.Unit)))
+}
+
+func (sp *SScalingPolicy) EventNotify(ctx context.Context, userCred mcclient.TokenCredential, name string) {
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:                 sp,
+		Action:              notifyclient.ActionExecute,
+		ObjDetailsDecorator: sp.eventDetails,
+	})
 }
 
 func (sp *SScalingPolicy) ScalingGroup() (*SScalingGroup, error) {

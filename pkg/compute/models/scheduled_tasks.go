@@ -31,8 +31,10 @@ import (
 	"yunion.io/x/onecloud/pkg/apis"
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	cop "yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/httperrors"
+	"yunion.io/x/onecloud/pkg/i18n"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 	"yunion.io/x/onecloud/pkg/mcclient/modulebase"
@@ -393,6 +395,28 @@ func (st *SScheduledTask) Action(ctx context.Context, userCred mcclient.TokenCre
 	return Action.ResourceOperation(st.ResourceOperation()).Session(session)
 }
 
+var stI18nTable i18n.Table
+
+func init() {
+	stI18nTable.Set(api.ST_RESOURCE_SERVER, i18n.NewTableEntry().EN("virtual machine").CN("虚拟机"))
+	stI18nTable.Set(api.ST_RESOURCE_OPERATION_RESTART, i18n.NewTableEntry().EN("restart").CN("重启"))
+	stI18nTable.Set(api.ST_RESOURCE_OPERATION_STOP, i18n.NewTableEntry().EN("stop").CN("关机"))
+	stI18nTable.Set(api.ST_RESOURCE_OPERATION_START, i18n.NewTableEntry().EN("start").CN("开机"))
+}
+
+func (st *SScheduledTask) ExecuteNotify(ctx context.Context, userCred mcclient.TokenCredential, name string) {
+	notifyclient.EventNotify(ctx, userCred, notifyclient.SEventNotifyParam{
+		Obj:    st,
+		Action: notifyclient.ActionExecute,
+		ObjDetailsDecorator: func(ctx context.Context, details *jsonutils.JSONDict) {
+
+			details.Set("resource_type_display", jsonutils.NewString(stI18nTable.Lookup(ctx, st.ResourceType)))
+			details.Set("operation_display", jsonutils.NewString(stI18nTable.Lookup(ctx, st.Operation)))
+			details.Set("resource_name", jsonutils.NewString(name))
+		},
+	})
+}
+
 func (st *SScheduledTask) Execute(ctx context.Context, userCred mcclient.TokenCredential) (err error) {
 	exec, err := st.IsExecuted()
 	if err != nil {
@@ -419,26 +443,35 @@ func (st *SScheduledTask) Execute(ctx context.Context, userCred mcclient.TokenCr
 		return err
 	}
 
-	var ids []string
+	var (
+		ids   []string
+		opts  options.BaseListOptions
+		f     bool
+		limit int
+	)
 	switch st.LabelType {
 	case api.ST_LABEL_TAG:
-		f := false
-		limit := 1000
-		opts := options.BaseListOptions{
+		opts = options.BaseListOptions{
 			Details: &f,
 			Limit:   &limit,
 			Scope:   "system",
 			Tags:    labels,
 		}
-		res, err := action.List(&WrapperListOptions{opts})
-		if err != nil {
-			return err
-		}
-		for id := range res {
-			ids = append(ids, id)
-		}
 	case api.ST_LABEL_ID:
 		ids = labels
+		opts = options.BaseListOptions{
+			Details: &f,
+			Limit:   &limit,
+			Scope:   "system",
+			Filter:  []string{fmt.Sprintf("id.in(%s)", strings.Join(ids, ","))},
+		}
+	}
+	res, err := action.List(&WrapperListOptions{opts})
+	if err != nil {
+		return err
+	}
+	for id := range res {
+		ids = append(ids, id)
 	}
 
 	maxLimit := 20
@@ -453,6 +486,9 @@ func (st *SScheduledTask) Execute(ctx context.Context, userCred mcclient.TokenCr
 		workerQueue <- struct{}{}
 		go func(n int, id string) {
 			ok, reason := action.Apply(id)
+			if ok {
+				st.ExecuteNotify(ctx, userCred, res[id])
+			}
 			results[n] = result{id, ok, reason}
 			<-workerQueue
 		}(i, id)
