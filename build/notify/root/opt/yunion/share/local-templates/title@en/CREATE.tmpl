@@ -1,0 +1,7 @@
+{{- $d := .resource_details }}
+The {{ .resource_type_display }} {{ $d.name }} 
+{{- if $d.project }}
+in poject {{ $d.project }} 
+{{- end -}}
+created successfully
+

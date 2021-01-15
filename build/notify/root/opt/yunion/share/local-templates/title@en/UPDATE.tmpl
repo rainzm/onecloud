@@ -1,0 +1,6 @@
+{{- $d := .resource_details }}
+The {{ .resource_type }} {{ $d.name }} 
+{{- if $d.project -}}
+in project {{ $d.project }} 
+{{- end -}}
+{{ .action_display }} successfully
