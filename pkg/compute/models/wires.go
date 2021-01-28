@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
@@ -872,6 +873,63 @@ func chooseCandidateNetworksByNetworkType(nets []SNetwork, isExit bool, serverTy
 	} else {
 		return maxSel
 	}
+}
+
+func (w *SWire) AllowPerformMergeNetwork(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject) bool {
+	return w.IsOwner(userCred) || db.IsAdminAllowPerform(userCred, w, "merge-network")
+}
+
+type Net struct {
+	*SNetwork
+	StartIp netutils.IPV4Addr
+}
+
+func (w *SWire) PerformMergeNetwork(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input jsonutils.JSONObject) (jsonutils.JSONObject, error) {
+
+	networks, err := w.getNetworks(userCred, rbacutils.ScopeSystem)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to getNetworks")
+	}
+	if len(networks) <= 1 {
+		return nil, nil
+	}
+	nets := make([]Net, len(networks))
+	for i := range nets {
+		startIp, _ := netutils.NewIPV4Addr(networks[i].GuestIpStart)
+		nets[i] = Net{
+			SNetwork: &networks[i],
+			StartIp:  startIp,
+		}
+	}
+	sort.Slice(nets, func(i, j int) bool {
+		if nets[i].VlanId == nets[j].VlanId {
+			return nets[i].StartIp < nets[j].StartIp
+		}
+		return nets[i].VlanId < nets[j].VlanId
+	})
+	log.Infof("nets sorted: %s", jsonutils.Marshal(nets))
+	for i := 0; i < len(nets)-1; i++ {
+		if nets[i].VlanId != nets[i+1].VlanId {
+			continue
+		}
+		// preparenets
+		wireNets := make([]*SNetwork, 0, len(nets)-2)
+		for j := range nets {
+			if j != i && j != i+1 {
+				wireNets = append(wireNets, nets[i].SNetwork)
+			}
+		}
+		startIp, endIp, err := nets[i].CheckInvalidToMerge(ctx, nets[i+1].SNetwork, wireNets)
+		if err != nil {
+			log.Debugf("unable to merge network %q to %q: %v", nets[i].GetId(), nets[i+1].GetId(), err)
+			continue
+		}
+		err = nets[i].MergeToNetworkAfterCheck(ctx, userCred, nets[i+1].SNetwork, startIp, endIp)
+		if err != nil {
+			return nil, errors.Wrapf(err, "unable to merge network %q to %q", nets[i].GetId(), nets[i+1].GetId())
+		}
+	}
+    return nil, nil
 }
 
 func (manager *SWireManager) InitializeData() error {

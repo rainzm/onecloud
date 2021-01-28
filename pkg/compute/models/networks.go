@@ -2234,10 +2234,100 @@ func (manager *SNetworkManager) handleNetworkIdChange(ctx context.Context, args 
 	return nil
 }
 
+func (self *SNetwork) CheckInvalidToMerge(ctx context.Context, net *SNetwork, allNets []*SNetwork) (string, string, error) {
+	failReason := make([]string, 0)
+
+	if self.WireId != net.WireId {
+		failReason = append(failReason, "wire_id")
+	}
+	if self.GuestGateway != net.GuestGateway {
+		failReason = append(failReason, "guest_gateway")
+	}
+	if self.VlanId != net.VlanId {
+		failReason = append(failReason, "vlan_id")
+	}
+	if self.ServerType != net.ServerType {
+		failReason = append(failReason, "server_type")
+	}
+
+	if len(failReason) > 0 {
+		err := httperrors.NewInputParameterError("Invalid Target Network %s: inconsist %s", net.GetId(), strings.Join(failReason, ","))
+		return "", "", err
+	}
+
+	var startIp, endIp string
+	ipNE, _ := netutils.NewIPV4Addr(net.GuestIpEnd)
+	ipNS, _ := netutils.NewIPV4Addr(net.GuestIpStart)
+	ipSS, _ := netutils.NewIPV4Addr(self.GuestIpStart)
+	ipSE, _ := netutils.NewIPV4Addr(self.GuestIpEnd)
+
+	var wireNets []SNetwork
+	if allNets == nil {
+		q := NetworkManager.Query().Equals("wire_id", self.WireId).NotEquals("id", self.Id).NotEquals("id", net.Id)
+		err := db.FetchModelObjects(NetworkManager, q, &allNets)
+		if err != nil && errors.Cause(err) != sql.ErrNoRows {
+			return "", "", errors.Wrap(err, "Query nets of same wire")
+		}
+	} else {
+		wireNets = make([]SNetwork, len(allNets))
+		for i := range wireNets {
+			wireNets[i] = *allNets[i]
+		}
+	}
+
+	if ipNE.StepUp() == ipSS || (ipNE.StepUp() < ipSS && !isOverlapNetworks(wireNets, ipNE.StepUp(), ipSS.StepDown())) {
+		startIp, endIp = net.GuestIpStart, self.GuestIpEnd
+	} else if ipSE.StepUp() == ipNS || (ipSE.StepUp() < ipNS && !isOverlapNetworks(wireNets, ipSE.StepUp(), ipNS.StepDown())) {
+		startIp, endIp = self.GuestIpStart, net.GuestIpEnd
+	} else {
+		note := "Incontinuity Network for %s and %s"
+		return "", "", httperrors.NewBadRequestError(note, self.Name, net.Name)
+	}
+	return startIp, endIp, nil
+}
+
+func (self *SNetwork) MergeToNetworkAfterCheck(ctx context.Context, userCred mcclient.TokenCredential, net *SNetwork, startIp string, endIp string) error {
+	lockman.LockClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
+	defer lockman.ReleaseClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
+
+	_, err := db.Update(net, func() error {
+		net.GuestIpStart = startIp
+		net.GuestIpEnd = endIp
+		return nil
+	})
+	if err != nil {
+		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
+		return err
+	}
+
+	if err := NetworkManager.handleNetworkIdChange(ctx, &networkIdChangeArgs{
+		action:   logclient.ACT_MERGE,
+		oldNet:   self,
+		newNet:   net,
+		userCred: userCred,
+	}); err != nil {
+		return err
+	}
+
+	note := map[string]string{"start_ip": startIp, "end_ip": endIp}
+	db.OpsLog.LogEvent(self, db.ACT_MERGE, note, userCred)
+	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, note, userCred, true)
+
+	if err = self.RealDelete(ctx, userCred); err != nil {
+		return err
+	}
+	note = map[string]string{"network": self.Id}
+	db.OpsLog.LogEvent(self, db.ACT_DELETE, note, userCred)
+	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_DELOCATE, note, userCred, true)
+	return nil
+}
+
+
+
 // 合并IP子网
 // 将两个相连的IP子网合并成一个IP子网
 func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenCredential, query jsonutils.JSONObject, input *api.NetworkMergeInput) (jsonutils.JSONObject, error) {
-	if len(input.Target) == 0 {
+    	if len(input.Target) == 0 {
 		return nil, httperrors.NewMissingParameterError("target")
 	}
 	iNet, err := NetworkManager.FetchByIdOrName(userCred, input.Target)
@@ -2257,82 +2347,13 @@ func (self *SNetwork) PerformMerge(ctx context.Context, userCred mcclient.TokenC
 		return nil, err
 	}
 
-	failReason := make([]string, 0)
-
-	if self.WireId != net.WireId {
-		failReason = append(failReason, "wire_id")
-	}
-	if self.GuestGateway != net.GuestGateway {
-		failReason = append(failReason, "guest_gateway")
-	}
-	if self.VlanId != net.VlanId {
-		failReason = append(failReason, "vlan_id")
-	}
-
-	if len(failReason) > 0 {
-		err = httperrors.NewInputParameterError("Invalid Target Network %s: inconsist %s", input.Target, strings.Join(failReason, ","))
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
-		return nil, err
-	}
-
-	var startIp, endIp string
-	ipNE, _ := netutils.NewIPV4Addr(net.GuestIpEnd)
-	ipNS, _ := netutils.NewIPV4Addr(net.GuestIpStart)
-	ipSS, _ := netutils.NewIPV4Addr(self.GuestIpStart)
-	ipSE, _ := netutils.NewIPV4Addr(self.GuestIpEnd)
-
-	wireNets := make([]SNetwork, 0)
-	q := NetworkManager.Query().Equals("wire_id", self.WireId).NotEquals("id", self.Id).NotEquals("id", net.Id)
-	err = db.FetchModelObjects(NetworkManager, q, &wireNets)
-	if err != nil && errors.Cause(err) != sql.ErrNoRows {
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
-		return nil, errors.Wrap(err, "Query nets of same wire")
-	}
-
-	if ipNE.StepUp() == ipSS || (ipNE.StepUp() < ipSS && !isOverlapNetworks(wireNets, ipNE.StepUp(), ipSS.StepDown())) {
-		startIp, endIp = net.GuestIpStart, self.GuestIpEnd
-	} else if ipSE.StepUp() == ipNS || (ipSE.StepUp() < ipNS && !isOverlapNetworks(wireNets, ipSE.StepUp(), ipNS.StepDown())) {
-		startIp, endIp = self.GuestIpStart, net.GuestIpEnd
-	} else {
-		note := "Incontinuity Network for %s and %s"
-		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE,
-			fmt.Sprintf(note, self.Name, net.Name), userCred, false)
-		return nil, httperrors.NewBadRequestError(note, self.Name, net.Name)
-	}
-
-	lockman.LockClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
-	defer lockman.ReleaseClass(ctx, NetworkManager, db.GetLockClassKey(NetworkManager, userCred))
-
-	_, err = db.Update(net, func() error {
-		net.GuestIpStart = startIp
-		net.GuestIpEnd = endIp
-		return nil
-	})
+	startIp, endIp, err := self.CheckInvalidToMerge(ctx, net, nil)
 	if err != nil {
 		logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, err.Error(), userCred, false)
 		return nil, err
 	}
 
-	if err := NetworkManager.handleNetworkIdChange(ctx, &networkIdChangeArgs{
-		action:   logclient.ACT_MERGE,
-		oldNet:   self,
-		newNet:   net,
-		userCred: userCred,
-	}); err != nil {
-		return nil, err
-	}
-
-	note := map[string]string{"start_ip": startIp, "end_ip": endIp}
-	db.OpsLog.LogEvent(self, db.ACT_MERGE, note, userCred)
-	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_MERGE, note, userCred, true)
-
-	if err = self.RealDelete(ctx, userCred); err != nil {
-		return nil, err
-	}
-	note = map[string]string{"network": self.Id}
-	db.OpsLog.LogEvent(self, db.ACT_DELETE, note, userCred)
-	logclient.AddActionLogWithContext(ctx, self, logclient.ACT_DELOCATE, note, userCred, true)
-	return nil, nil
+	return nil, self.MergeToNetworkAfterCheck(ctx, userCred, net, startIp, endIp)
 }
 
 // 分割IP子网
