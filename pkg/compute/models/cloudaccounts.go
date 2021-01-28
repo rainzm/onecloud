@@ -531,13 +531,47 @@ func (scm *SCloudaccountManager) PerformPrepareNets(ctx context.Context, userCre
 		}
 		networks[i] = nets
 	}
-	return scm.parseAndSuggest(sParseAndSuggest{
+    output = scm.parseAndSuggest(sParseAndSuggest{
 		NInfos:      nInfos,
 		AccountName: input.Name,
 		ZoneIds:     zoneids,
 		Wires:       wires,
 		Networks:    networks,
-	}), nil
+	})
+    if len(input.ProjectId) == 0 {
+        return output, errors.Error("need projectId")
+    }
+    errs := make([]string, 0)
+    for _, wireNet := range output.CAWireNets {
+        wireId := wireNet.SuitableWire
+        if len(wireId) == 0 {
+            wireId, err = scm.createWire(ctx, api.DEFAULT_VPC_ID, wireNet.SuggestedWire.ZoneIds[0], wireNet.SuggestedWire.Name, domainId, wireNet.SuggestedWire.Description) 
+            if err != nil {
+                errs = append(errs, errors.Wrapf(err, "create wire %s failed", wireNet.SuggestedWire.Name).Error())
+                continue
+            }
+        }
+        for _, net := range wireNet.HostSuggestedNetworks {
+            err := scm.createNetwork(ctx, domainId, input.ProjectId, wireId, api.NETWORK_TYPE_BAREMETAL, net)
+            if err != nil {
+                errs = append(errs, errors.Wrapf(err, "create host network %s for wire %s failed", jsonutils.Marshal(net), wireId).Error())
+                continue
+            }
+        }
+        for _, net := range wireNet.GuestSuggestedNetworks {
+            err := scm.createNetwork(ctx, domainId, input.ProjectId, wireId, api.NETWORK_TYPE_GUEST, net)
+            if err != nil {
+                errs = append(errs, errors.Wrapf(err, "create guest network %s for wire %s failed", jsonutils.Marshal(net), wireId).Error())
+                continue
+            }
+        }
+    }
+    if len(errs) > 0 {
+        errStr := strings.Join(errs, "\n")
+        err = errors.Error(errStr)
+        return output, err
+    }
+    return output, nil
 }
 
 type sParseAndSuggest struct {
@@ -546,6 +580,58 @@ type sParseAndSuggest struct {
 	ZoneIds     []string
 	Wires       []SWire
 	Networks    [][]SNetwork
+}
+
+func (self *SCloudaccountManager) createWire(ctx context.Context, vpcId, zoneId, wireName, domainId, desc string) (string, error) {
+	wire := &SWire{
+		Bandwidth: 10000,
+		Mtu:       1500,
+	}
+	wire.VpcId = vpcId
+	wire.ZoneId = zoneId
+	wire.IsEmulated = false
+	wire.Name = wireName
+	wire.DomainId = domainId
+	wire.Description = desc
+	wire.IsPublic = true
+	wire.PublicScope = "system"
+	wire.PublicSrc = "local"
+	wire.SetModelManager(WireManager, wire)
+	err := WireManager.TableSpec().Insert(ctx, wire)
+	if err != nil {
+		return "", err
+	}
+	log.Infof("create wire %s succussfully", wire.GetId())
+	return wire.GetId(), nil
+}
+
+func (self *SCloudaccountManager) createNetwork(ctx context.Context, domainId, projectId, wireId, networkType string, net api.CANetConf) error {
+	network := &SNetwork{}
+	network.Name = net.Name
+	if hint, err := NetworkManager.NewIfnameHint(net.Name); err != nil {
+		log.Errorf("can't NewIfnameHint form hint %s", net.Name)
+	} else {
+		network.IfnameHint = hint
+	}
+	network.GuestIpStart = net.GuestIpStart
+	network.GuestIpEnd = net.GuestIpEnd
+	network.GuestIpMask = net.GuestIpMask
+	network.GuestGateway = net.GuestGateway
+	network.VlanId = int(net.VlanID)
+	network.WireId = wireId
+	network.ServerType = networkType
+	network.IsPublic = true
+	network.Status = api.NETWORK_STATUS_AVAILABLE
+	network.PublicScope = string(rbacutils.ScopeDomain)
+	network.ProjectId = projectId
+	network.DomainId = domainId
+	network.Description = net.Description
+
+	network.SetModelManager(NetworkManager, network)
+	// TODO: Prevent IP conflict
+	log.Infof("create network %s succussfully", network.Id)
+	err := NetworkManager.TableSpec().Insert(ctx, network)
+	return err
 }
 
 func (scm *SCloudaccountManager) parseAndSuggest(params sParseAndSuggest) api.CloudaccountPerformPrepareNetsOutput {
